@@ -1,13 +1,14 @@
 // Catalog service (main thread): queries over catalog.db, the in-memory LRU (max. 2 accounts:
-// light title list + search index), lazy Xtream series, play-url rewriting and play lookups,
+// light title list + search index), lazy Xtream series, direct stream urls (credentials filled
+// in per request; the server never streams video),
 // the build queue and the refresh scheduler.
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Config } from '../config.ts';
-import { hmac, seal, unseal, type ServerKeys } from '../keys.ts';
-import type { DeviceRow, Store } from '../store.ts';
-import { sha256hex } from '../util.ts';
+import type { ServerKeys } from '../keys.ts';
+import type { Store } from '../store.ts';
+import { scrubUrls, sha256hex } from '../util.ts';
 import type { BuildEvent, BuildJob, CatalogMetaJson, LazyRef, StoredTitle } from './build.ts';
 import { maskEpisodes, sanitizeImage, titleRow, titleVariants } from './build.ts';
 import {
@@ -29,7 +30,14 @@ import {
 	type StreamVariant,
 	type Title
 } from './core.ts';
-import { openCatalogDb, packJson, purgeAccount, purgeSourceSeries, unpackJson } from './db.ts';
+import {
+	genKey,
+	openCatalogDb,
+	packJson,
+	purgeAccount,
+	purgeSourceSeries,
+	unpackJson
+} from './db.ts';
 import { toSourceError } from './fetch.ts';
 import { loadSeriesInfo, type FetchLimits } from './providers.ts';
 import { BuildQueue, type AccountBuildStatus } from './queue.ts';
@@ -38,6 +46,7 @@ import { secretList, SourceRepo, type ResolvedSource } from './sources.ts';
 
 const HOUR = 3600_000;
 const LRU_MAX = 2;
+const EMPTY: never[] = [];
 
 /** Light title kept in memory per account (recommend, similar, home rows). */
 type Light = Title & { kids: boolean };
@@ -59,10 +68,6 @@ export interface CatalogServiceOptions {
 
 type Row = Record<string, unknown>;
 
-export function b64url(s: string): string {
-	return Buffer.from(s, 'utf8').toString('base64url');
-}
-
 export class CatalogService {
 	readonly config: Config;
 	readonly store: Store;
@@ -73,6 +78,8 @@ export class CatalogService {
 	readonly queue: BuildQueue;
 	#lru = new Map<string, Loaded>();
 	#seriesJobs = new Map<string, Promise<StoredTitle>>();
+	#tmdbFollowUp = new Set<string>();
+	#skipTmdb = new Set<string>();
 	#maskers = new Map<string, { at: number; masker: Masker; src: ResolvedSource }>();
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#startTimer: ReturnType<typeof setTimeout> | undefined;
@@ -89,9 +96,15 @@ export class CatalogService {
 			{
 				makeJob: (accountId, force) => this.#makeJob(accountId, force),
 				onEvent: (accountId, e) => this.#onEvent(accountId, e),
-				onFinished: (accountId, error) => this.#onFinished(accountId, error)
+				onFinished: (accountId, error, code) => this.#onFinished(accountId, error, code)
 			},
-			{ inline: o.config.buildInline, memoryMb: o.config.buildMemoryMb }
+			{
+				inline: o.config.buildInline,
+				// Read at every build (so a config change applies to the next build).
+				get memoryMb() {
+					return o.config.buildMemoryMb;
+				}
+			}
 		);
 		if (o.config.catalogRefreshHours > 0) {
 			this.#timer = setInterval(() => this.tick(), 10 * 60_000);
@@ -117,6 +130,10 @@ export class CatalogService {
 
 	#makeJob(accountId: string, force: string[]): BuildJob | null {
 		if (!this.store.getAccount(accountId)) return null;
+		// Free this account's in-memory lists while its build runs (memory budget); they are
+		// rebuilt from the new generation on the next request. With --expose-gc (the image sets
+		// it) the freed memory is reclaimed now, before the build worker needs it.
+		if (this.#lru.delete(accountId)) (globalThis as { gc?: () => void }).gc?.();
 		const list = this.sources.list(accountId).filter((s) => s.enabled);
 		const resolved: ResolvedSource[] = [];
 		for (const rec of list) {
@@ -138,7 +155,8 @@ export class CatalogService {
 			preferLang: this.config.catalogLang,
 			limits: this.limits,
 			ttl: { catalogMs: 12 * HOUR, epgMs: 6 * HOUR, seriesMs: 12 * HOUR },
-			tmdb: this.config.tmdbApiKey
+			tmdb:
+				this.config.tmdbApiKey && !this.#skipTmdb.delete(accountId)
 				? { apiKey: this.config.tmdbApiKey, maxTitles: this.config.tmdbMaxTitles }
 				: undefined
 		};
@@ -149,26 +167,39 @@ export class CatalogService {
 			if (this.store.getAccount(accountId)) this.sources.setStatus(accountId, e.id, e.status);
 		} else if (e.type === 'built') {
 			this.#lru.delete(accountId);
+		} else if (e.type === 'tmdb') {
+			if (e.changed) this.#tmdbFollowUp.add(accountId);
 		} else if (e.type === 'warn' && this.config.log) {
-			console.warn(`[catalog] ${accountId}: ${e.message}`);
+			console.warn(`[catalog] ${accountId}: ${scrubUrls(e.message)}`);
 		}
 	}
 
-	#onFinished(accountId: string, error?: string) {
+	#onFinished(accountId: string, error?: string, code = 'build_failed') {
 		if (error) {
-			if (this.config.log) console.warn(`[catalog] build ${accountId} mislukt: ${error}`);
+			if (this.config.log)
+				console.warn(`[catalog] build ${accountId} mislukt (${code}): ${scrubUrls(error)}`);
+			// The previous generation stays active; meta reports status 'error' with this.
 			this.db
 				.prepare(
-					`INSERT INTO cat_state (account_id, error) VALUES (?, ?)
-					 ON CONFLICT (account_id) DO UPDATE SET error = excluded.error`
+					`INSERT INTO cat_state (account_id, error, error_code, error_at) VALUES (?, ?, ?, ?)
+					 ON CONFLICT (account_id) DO UPDATE SET error = excluded.error,
+					 error_code = excluded.error_code, error_at = excluded.error_at`
 				)
-				.run(accountId, error.slice(0, 500));
+				.run(accountId, scrubUrls(error).slice(0, 500), code, Date.now());
 		}
 		this.#lru.delete(accountId);
+		// TMDB found new ids: one follow-up build (without TMDB) applies them.
+		if (!error && this.#tmdbFollowUp.delete(accountId)) {
+			this.#skipTmdb.add(accountId);
+			this.queue.enqueue(accountId);
+		}
 	}
 
 	/** Queues a refresh. `force` true = every source, or the given source id. */
-	refresh(accountId: string, opts: { force?: boolean; sourceId?: string } = {}): AccountBuildStatus {
+	refresh(
+		accountId: string,
+		opts: { force?: boolean; sourceId?: string } = {}
+	): AccountBuildStatus {
 		const force = opts.sourceId ? [opts.sourceId] : opts.force ? ['*'] : [];
 		return this.queue.enqueue(accountId, force);
 	}
@@ -208,7 +239,7 @@ export class CatalogService {
 		try {
 			purgeAccount(this.db, accountId);
 		} catch (err) {
-			console.warn('[catalog] purge failed', (err as Error).message);
+			console.warn('[catalog] purge failed', scrubUrls((err as Error).message));
 		}
 		rmSync(accountCacheDir(this.config.dataDir, accountId), { recursive: true, force: true });
 	}
@@ -226,15 +257,38 @@ export class CatalogService {
 
 	// ---- state & memory ----------------------------------------------------------------
 
-	state(accountId: string): { builtAt: number; version: number; meta?: CatalogMetaJson; error?: string } | undefined {
-		const r = this.db.prepare('SELECT * FROM cat_state WHERE account_id = ?').get(accountId) as Row | undefined;
+	state(accountId: string):
+		| {
+				builtAt: number;
+				version: number;
+				gen?: string;
+				meta?: CatalogMetaJson;
+				error?: string;
+				errorCode?: string;
+				errorAt?: number;
+		  }
+		| undefined {
+		const r = this.db.prepare('SELECT * FROM cat_state WHERE account_id = ?').get(accountId) as
+			| Row
+			| undefined;
 		if (!r) return undefined;
 		return {
 			builtAt: Number(r.built_at),
 			version: Number(r.version),
+			gen: r.gen ? String(r.gen) : undefined,
 			meta: r.meta ? (JSON.parse(String(r.meta)) as CatalogMetaJson) : undefined,
-			error: r.error ? String(r.error) : undefined
+			error: r.error ? String(r.error) : undefined,
+			errorCode: r.error_code ? String(r.error_code) : undefined,
+			errorAt: r.error_at ? Number(r.error_at) : undefined
 		};
+	}
+
+	/** account_id value of the ACTIVE catalog generation (see db.ts genKey). */
+	#k(accountId: string): string {
+		const r = this.db.prepare('SELECT gen FROM cat_state WHERE account_id = ?').get(accountId) as
+			| { gen: string | null }
+			| undefined;
+		return genKey(accountId, r?.gen);
 	}
 
 	#loaded(accountId: string): Loaded {
@@ -245,14 +299,18 @@ export class CatalogService {
 			this.#lru.set(accountId, hit);
 			return hit;
 		}
-		const rows = this.db
-			.prepare(
-				'SELECT id, kind, popularity, added_at, kids, has_overview, genres FROM cat_titles WHERE account_id = ?'
-			)
-			.all(accountId) as Row[];
-		const light: Light[] = rows.map((r) => {
+		const stmt = this.db.prepare(
+			'SELECT id, kind, popularity, added_at, kids, has_overview, genres FROM cat_titles WHERE account_id = ?'
+		);
+		// Minimal objects (only what home rows, similar and recommend read); identical genre lists
+		// share one array. Rows are streamed (iterate), not materialised as one big array.
+		const genreLists = new Map<string, string[]>();
+		const light: Light[] = [];
+		for (const r of stmt.iterate(this.#k(accountId)) as Iterable<Row>) {
 			const g = String(r.genres);
-			return {
+			let genres = genreLists.get(g);
+			if (!genres) genreLists.set(g, (genres = g ? g.slice(1, -1).split('|') : []));
+			light.push({
 				id: String(r.id),
 				kind: String(r.kind) as Title['kind'],
 				popularity: Number(r.popularity),
@@ -260,18 +318,10 @@ export class CatalogService {
 				kids: Number(r.kids) === 1,
 				kidsSafe: Number(r.kids) === 1,
 				overview: Number(r.has_overview) ? '1' : undefined,
-				genres: g ? g.slice(1, -1).split('|') : [],
-				title: '',
-				altTitles: [],
-				cast: [],
-				variants: [],
-				languages: [],
-				subtitleLanguages: [],
-				qualities: [],
-				sourceIds: [],
-				rawRefs: []
-			};
-		});
+				genres
+			} as Light);
+		}
+		(globalThis as { gc?: () => void }).gc?.();
 		const loaded: Loaded = { version, light, byId: new Map(light.map((t) => [t.id, t])) };
 		this.#lru.set(accountId, loaded);
 		while (this.#lru.size > LRU_MAX) this.#lru.delete(this.#lru.keys().next().value!);
@@ -286,13 +336,14 @@ export class CatalogService {
 	/** TitleCard JSON strings by id (unknown ids are skipped; order of `ids` kept). */
 	cards(accountId: string, ids: string[], kids = false): string[] {
 		const map = new Map<string, string>();
+		const key = this.#k(accountId);
 		for (let i = 0; i < ids.length; i += 200) {
 			const chunk = ids.slice(i, i + 200);
 			const rows = this.db
 				.prepare(
 					`SELECT id, card FROM cat_titles WHERE account_id = ? AND id IN (${chunk.map(() => '?').join(',')})${kids ? ' AND kids = 1' : ''}`
 				)
-				.all(accountId, ...chunk) as Row[];
+				.all(key, ...chunk) as Row[];
 			for (const r of rows) map.set(String(r.id), String(r.card));
 		}
 		const out: string[] = [];
@@ -310,8 +361,11 @@ export class CatalogService {
 		const st = this.state(accountId);
 		const q = this.queue.status(accountId);
 		const m = st?.meta ? (kids ? st.meta.kids : st.meta) : undefined;
+		// The last attempt failed (newer than the last successful build): 'error', while the
+		// previous catalog (counts below) stays available.
+		const failed = !!st?.errorAt && st.errorAt >= (st.builtAt || 0);
 		const status =
-			q.state !== 'idle' ? 'building' : st?.meta ? 'ready' : st?.error || q.error ? 'error' : 'empty';
+			q.state !== 'idle' ? 'building' : failed ? 'error' : st?.meta ? 'ready' : 'empty';
 		const out: Record<string, unknown> = {
 			builtAt: st?.builtAt ?? 0,
 			status,
@@ -324,8 +378,10 @@ export class CatalogService {
 			out.progress = Math.round((q.progress ?? 0) * 100) / 100;
 			if (q.phase) out.phase = q.phase.replace(/:.*$/, '');
 		}
-		const error = q.error ?? st?.error;
-		if (error) out.error = error;
+		if (failed && st?.error) {
+			out.error = st.error;
+			out.errorCode = st.errorCode ?? 'build_failed';
+		}
 		return out;
 	}
 
@@ -340,7 +396,7 @@ export class CatalogService {
 			.prepare(
 				`SELECT card FROM cat_channels WHERE account_id = ?${kids ? ' AND kids = 1' : ''} ORDER BY pos LIMIT ?`
 			)
-			.all(accountId, limit) as Row[];
+			.all(this.#k(accountId), limit) as Row[];
 		return (
 			`{"featured":${row(featured(titles, Math.min(limit, 8)))}` +
 			`,"recent":${row(recent(titles, limit))}` +
@@ -353,11 +409,19 @@ export class CatalogService {
 
 	titles(
 		accountId: string,
-		q: { kind?: string; genre?: string; lang?: string; sort: string; kids: boolean; limit: number; cursor?: string }
+		q: {
+			kind?: string;
+			genre?: string;
+			lang?: string;
+			sort: string;
+			kids: boolean;
+			limit: number;
+			cursor?: string;
+		}
 	): string {
 		this.ensureBuilt(accountId);
 		const where: string[] = ['account_id = ?'];
-		const args: (string | number)[] = [accountId];
+		const args: (string | number)[] = [this.#k(accountId)];
 		if (q.kind === 'movie' || q.kind === 'series') {
 			where.push('kind = ?');
 			args.push(q.kind);
@@ -372,7 +436,11 @@ export class CatalogService {
 			args.push(`%|${q.lang}|%`);
 		}
 		const total = Number(
-			(this.db.prepare(`SELECT COUNT(*) AS n FROM cat_titles WHERE ${where.join(' AND ')}`).get(...args) as Row).n
+			(
+				this.db
+					.prepare(`SELECT COUNT(*) AS n FROM cat_titles WHERE ${where.join(' AND ')}`)
+					.get(...args) as Row
+			).n
 		);
 		const sorts: Record<string, { col: string; dir: 'ASC' | 'DESC' }> = {
 			popular: { col: 'popularity', dir: 'DESC' },
@@ -395,7 +463,8 @@ export class CatalogService {
 		const more = rows.length > q.limit;
 		const page = rows.slice(0, q.limit);
 		const last = page[page.length - 1];
-		const next = more && last ? encodeCursor(q.sort, last.k as string | number, String(last.id)) : undefined;
+		const next =
+			more && last ? encodeCursor(q.sort, last.k as string | number, String(last.id)) : undefined;
 		return (
 			`{"items":[${page.map((r) => String(r.card)).join(',')}]` +
 			(next ? `,"nextCursor":${JSON.stringify(next)}` : '') +
@@ -408,12 +477,12 @@ export class CatalogService {
 		return `{"items":[${cards.join(',')}],"total":${cards.length}}`;
 	}
 
-	/** Full title with play urls and similar titles; lazy Xtream series are loaded first. */
+	/** Full title with direct stream urls and similar titles; lazy Xtream series load first. */
 	async title(
 		accountId: string,
 		id: string,
 		kids: boolean,
-		play: (v: StreamVariant) => StreamVariant
+		direct: (v: StreamVariant) => StreamVariant | undefined
 	): Promise<{ status: 200; body: string } | { status: 403 | 404; body?: undefined }> {
 		this.ensureBuilt(accountId);
 		let t = this.#detail(accountId, id);
@@ -426,12 +495,12 @@ export class CatalogService {
 		const out: Title = {
 			...title,
 			seasons: title.kind === 'series' ? (title.seasons ?? []) : title.seasons,
-			variants: title.variants.map(play),
+			variants: mapVariants(title.variants, direct),
 			...(title.seasons
 				? {
 						seasons: title.seasons.map((s) => ({
 							...s,
-							episodes: s.episodes.map((e) => ({ ...e, variants: e.variants.map(play) }))
+							episodes: s.episodes.map((e) => ({ ...e, variants: mapVariants(e.variants, direct) }))
 						}))
 					}
 				: {})
@@ -450,7 +519,7 @@ export class CatalogService {
 	#detail(accountId: string, id: string): StoredTitle | undefined {
 		const r = this.db
 			.prepare('SELECT data FROM cat_details WHERE account_id = ? AND id = ?')
-			.get(accountId, id) as { data: Uint8Array } | undefined;
+			.get(this.#k(accountId), id) as { data: Uint8Array } | undefined;
 		return r ? unpackJson<StoredTitle>(r.data) : undefined;
 	}
 
@@ -479,8 +548,7 @@ export class CatalogService {
 		for (const ref of t._lazy ?? []) {
 			let res: { info: Partial<RawSeries>; episodes: RawEpisode[] } | undefined;
 			const cached = getCached.get(accountId, ref.sourceId, ref.providerId, now - 12 * HOUR) as
-				| { data: string }
-				| undefined;
+				{ data: string } | undefined;
 			if (cached) res = JSON.parse(cached.data);
 			else {
 				const ms = this.#masker(accountId, ref.sourceId);
@@ -498,7 +566,7 @@ export class CatalogService {
 					remaining.push(ref);
 					if (this.config.log)
 						console.warn(
-							`[catalog] serie laden mislukt: ${toSourceError(err, secretList(ms.src)).message}`
+							`[catalog] serie laden mislukt: ${scrubUrls(toSourceError(err, secretList(ms.src)).message)}`
 						);
 					continue;
 				}
@@ -541,19 +609,22 @@ export class CatalogService {
 
 	#persistTitle(accountId: string, t: StoredTitle) {
 		const r = titleRow(t);
+		const key = this.#k(accountId);
 		try {
 			this.db.exec('BEGIN IMMEDIATE');
 			try {
 				this.db
 					.prepare('UPDATE cat_details SET data = ? WHERE account_id = ? AND id = ?')
-					.run(packJson(t), accountId, t.id);
+					.run(packJson(t), key, t.id);
 				this.db
-					.prepare('UPDATE cat_titles SET card = ?, langs = ?, search = ? WHERE account_id = ? AND id = ?')
-					.run(r.card, r.langs, r.search, accountId, t.id);
+					.prepare(
+						'UPDATE cat_titles SET card = ?, langs = ?, search = ? WHERE account_id = ? AND id = ?'
+					)
+					.run(r.card, r.langs, r.search, key, t.id);
 				const ins = this.db.prepare(
 					'INSERT OR REPLACE INTO cat_variants (account_id, id, source_id, url, alt) VALUES (?, ?, ?, ?, NULL)'
 				);
-				for (const v of titleVariants(t)) ins.run(accountId, v.id, v.sourceId, v.url);
+				for (const v of titleVariants(t)) ins.run(key, v.id, v.sourceId, v.url);
 				this.db.exec('COMMIT');
 			} catch (err) {
 				this.db.exec('ROLLBACK');
@@ -561,7 +632,8 @@ export class CatalogService {
 			}
 		} catch (err) {
 			// A build is writing: the episodes stay in cat_series and come back with the build.
-			if (this.config.log) console.warn('[catalog] serie opslaan uitgesteld:', (err as Error).message);
+			if (this.config.log)
+				console.warn('[catalog] serie opslaan uitgesteld:', scrubUrls((err as Error).message));
 		}
 	}
 
@@ -591,37 +663,50 @@ export class CatalogService {
 		const loaded = this.#loaded(accountId);
 		const have = kids ? loaded.searchKids : loaded.search;
 		if (have) return have;
-		const rows = this.db
-			.prepare(`SELECT id, kind, popularity, search FROM cat_titles WHERE account_id = ?${kids ? ' AND kids = 1' : ''}`)
-			.all(accountId) as Row[];
-		const docs = rows.map((r) => {
-			const s = JSON.parse(String(r.search)) as {
-				t: string;
-				o?: string;
-				a: string[];
-				c: string[];
-				d?: string;
-				g: string[];
-			};
-			return {
+		// Only the fields the index needs (json_extract in SQLite; no full card parse per title).
+		const stmt = this.db.prepare(
+			`SELECT id, kind, popularity, json_extract(card, '$.title') AS t,
+			 json_extract(card, '$.originalTitle') AS o, json_extract(card, '$.altTitles') AS a,
+			 json_extract(card, '$.genres') AS g, json_extract(search, '$.c') AS c,
+			 json_extract(search, '$.d') AS d
+			 FROM cat_titles WHERE account_id = ?${kids ? ' AND kids = 1' : ''}`
+		);
+		const docs: Title[] = [];
+		for (const r of stmt.iterate(this.#k(accountId)) as Iterable<Row>) {
+			docs.push({
 				id: String(r.id),
 				kind: String(r.kind),
 				popularity: Number(r.popularity),
-				title: s.t,
-				originalTitle: s.o,
-				altTitles: s.a.map((title) => ({ title })),
-				cast: s.c.map((name) => ({ name })),
-				director: s.d,
-				genres: s.g
-			} as unknown as Title;
-		});
+				title: String(r.t ?? ''),
+				originalTitle: r.o == null ? undefined : String(r.o),
+				altTitles: r.a ? (JSON.parse(String(r.a)) as Title['altTitles']) : EMPTY,
+				cast: r.c ? (JSON.parse(String(r.c)) as string[]).map((name) => ({ name })) : EMPTY,
+				director: r.d == null ? undefined : String(r.d),
+				genres: r.g ? (JSON.parse(String(r.g)) as string[]) : EMPTY
+			} as unknown as Title);
+		}
 		const chans = this.db
-			.prepare(`SELECT id, card FROM cat_channels WHERE account_id = ?${kids ? ' AND kids = 1' : ''} ORDER BY pos`)
-			.all(accountId) as Row[];
+			.prepare(
+				`SELECT id, card FROM cat_channels WHERE account_id = ?${kids ? ' AND kids = 1' : ''} ORDER BY pos`
+			)
+			.all(this.#k(accountId)) as Row[];
 		const channels = chans.map((r) => JSON.parse(String(r.card)) as Channel);
 		const index = new SearchIndex(docs, channels);
+		// After indexing, results only need id, kind and popularity of a title: drop the rest so
+		// the index does not keep every alt title, cast list and genre list twice.
+		for (const d of docs) {
+			const x = d as unknown as Record<string, unknown>;
+			x.title = '';
+			x.originalTitle = undefined;
+			x.altTitles = EMPTY;
+			x.cast = EMPTY;
+			x.director = undefined;
+			x.genres = EMPTY;
+		}
 		if (kids) loaded.searchKids = index;
 		else loaded.search = index;
+		// Building the index leaves a lot of short-lived garbage: collect it now (--expose-gc).
+		(globalThis as { gc?: () => void }).gc?.();
 		return index;
 	}
 
@@ -661,22 +746,32 @@ export class CatalogService {
 		};
 	}
 
-	recommend(accountId: string, history: string[], favorites: string[], limit: number, kids: boolean): string {
+	recommend(
+		accountId: string,
+		history: string[],
+		favorites: string[],
+		limit: number,
+		kids: boolean
+	): string {
 		this.ensureBuilt(accountId);
 		const titles = this.#titlesFor(accountId, kids);
 		const entries: HistoryEntry[] = history.map((titleId, i) => ({ titleId, at: -i }));
 		const picked = recommend(titles, { favorites, history: entries, progress: {} }, limit);
-		return `{"items":[${this.cards(accountId, picked.map((t) => t.id), kids).join(',')}]}`;
+		return `{"items":[${this.cards(
+			accountId,
+			picked.map((t) => t.id),
+			kids
+		).join(',')}]}`;
 	}
 
 	channels(
 		accountId: string,
 		q: { group?: string; lang?: string; kids: boolean },
-		play: (v: StreamVariant) => StreamVariant
+		direct: (v: StreamVariant) => StreamVariant | undefined
 	): string {
 		this.ensureBuilt(accountId);
 		const where = ['account_id = ?'];
-		const args: string[] = [accountId];
+		const args: string[] = [this.#k(accountId)];
 		if (q.kids) where.push('kids = 1');
 		if (q.group) {
 			where.push('grp = ?');
@@ -686,24 +781,34 @@ export class CatalogService {
 			where.push('langs LIKE ?');
 			args.push(`%|${q.lang}|%`);
 		}
-		const rows = this.db
-			.prepare(`SELECT data FROM cat_channels WHERE ${where.join(' AND ')} ORDER BY pos`)
-			.all(...args) as Row[];
-		const items = rows.map((r) => {
+		const stmt = this.db.prepare(
+			`SELECT data FROM cat_channels WHERE ${where.join(' AND ')} ORDER BY pos`
+		);
+		// Streamed row by row into one string (no intermediate row/item arrays).
+		let out = '{"items":[';
+		let first = true;
+		for (const r of stmt.iterate(...args) as Iterable<Row>) {
 			const c = JSON.parse(String(r.data)) as Channel;
-			return JSON.stringify({ ...c, variants: c.variants.map(play) });
-		});
-		return `{"items":[${items.join(',')}]}`;
+			out += (first ? '' : ',') + JSON.stringify({ ...c, variants: mapVariants(c.variants, direct) });
+			first = false;
+		}
+		return out + ']}';
 	}
 
-	epg(accountId: string, epgIds: string[], from: number, to: number): Record<string, EpgProgramme[]> {
+	epg(
+		accountId: string,
+		epgIds: string[],
+		from: number,
+		to: number
+	): Record<string, EpgProgramme[]> {
 		const stmt = this.db.prepare(
 			`SELECT start, stop, title, desc, category, icon FROM cat_epg
 			 WHERE account_id = ? AND epg_id = ? AND stop > ? AND start < ? ORDER BY start`
 		);
 		const out: Record<string, EpgProgramme[]> = {};
+		const key = this.#k(accountId);
 		for (const id of epgIds) {
-			const rows = stmt.all(accountId, id, from, to) as Row[];
+			const rows = stmt.all(key, id, from, to) as Row[];
 			out[id] = rows.map((r) => programme(id, r));
 		}
 		return out;
@@ -716,96 +821,49 @@ export class CatalogService {
 			 WHERE account_id = ? AND epg_id = ? AND stop > ? ORDER BY start LIMIT 2`
 		);
 		const out: Record<string, { now?: EpgProgramme; next?: EpgProgramme }> = {};
+		const key = this.#k(accountId);
 		for (const id of channelIds) {
-			const r = ch.get(accountId, id) as { epg_id: string | null } | undefined;
+			const r = ch.get(key, id) as { epg_id: string | null } | undefined;
 			if (!r?.epg_id) {
 				out[id] = {};
 				continue;
 			}
-			const list = (stmt.all(accountId, r.epg_id, now) as Row[]).map((x) => programme(r.epg_id!, x));
+			const list = (stmt.all(key, r.epg_id, now) as Row[]).map((x) =>
+				programme(r.epg_id!, x)
+			);
 			if (list[0] && list[0].start <= now) out[id] = { now: list[0], next: list[1] };
 			else out[id] = { next: list[0] };
 		}
 		return out;
 	}
 
-	// ---- play urls ------------------------------------------------------------------------
+	// ---- stream urls -----------------------------------------------------------------------
 
-	/** Deterministic per-device play token (HMAC of device id + generation); no plaintext stored. */
-	playToken(device: DeviceRow): string {
-		const token =
-			'pt_' + hmac(this.keys.play, `${device.id}:${device.playTokenGen}`).toString('base64url');
-		const hash = sha256hex(token);
-		if (device.playTokenHash !== hash) {
-			this.store.setPlayToken(device.id, device.playTokenGen, hash);
-			device.playTokenHash = hash;
-		}
-		return token;
-	}
-
-	/** New generation: every previous play url of this device stops working. */
-	rotatePlayToken(device: DeviceRow): string {
-		const fresh = this.store.getDevice(device.id)!;
-		fresh.playTokenGen += 1;
-		fresh.playTokenHash = null;
-		return this.playToken(fresh);
-	}
-
-	deviceForPlayToken(token: string): DeviceRow | undefined {
-		if (!/^pt_[A-Za-z0-9_-]{43}$/.test(token)) return undefined;
-		return this.store.deviceByPlayTokenHash(sha256hex(token));
-	}
-
-	/** Variant → copy with play urls (url, altUrls) and the upstreamHttp hint. */
-	playMapper(base: string, token: string): (v: StreamVariant) => StreamVariant {
+	/**
+	 * Variant → copy with the REAL upstream url(s), credentials filled in from the account's
+	 * decrypted source secrets (only for this request; stored urls stay masked). Adds the
+	 * `upstreamHttp` hint. Returns undefined when the source cannot be resolved (deleted, or
+	 * secrets not decryptable): such a variant is dropped instead of leaking placeholders.
+	 */
+	directMapper(accountId: string): (v: StreamVariant) => StreamVariant | undefined {
 		return (v) => {
-			const id = b64url(v.id);
-			const ext = (u: string) => {
-				const m = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(u.replace(/\d+/g, 'x'));
-				return m ? '.' + m[1].toLowerCase() : '';
-			};
+			const masked = v.url.includes('\uE000') || v.altUrls?.some((u) => u.includes('\uE000'));
+			let unmask = (u: string) => u;
+			if (masked) {
+				const ms = this.#masker(accountId, v.sourceId);
+				if (!ms) return undefined;
+				unmask = ms.masker.unmask;
+			}
+			const url = unmask(v.url);
+			if (url.includes('\uE000')) return undefined;
 			const out: StreamVariant & { upstreamHttp?: boolean } = {
 				...v,
-				url: `${base}/v1/play/${token}/${id}${ext(v.url)}`,
-				upstreamHttp: v.url.startsWith('http:')
+				url,
+				upstreamHttp: url.startsWith('http:')
 			};
-			if (v.altUrls?.length)
-				out.altUrls = v.altUrls.map((u, i) => `${base}/v1/play/${token}/${id}~${i + 1}${ext(u)}`);
+			if (v.altUrls?.length) out.altUrls = v.altUrls.map(unmask);
 			return out;
 		};
-	}
-
-	/** Resolves a play path segment to the real (unmasked) upstream url. */
-	resolvePlay(accountId: string, segment: string): string | undefined {
-		const m = /^([A-Za-z0-9_-]{2,400})(?:~(\d{1,2}))?(?:\.[a-z0-9]{1,5})?$/.exec(segment);
-		if (!m) return undefined;
-		const variantId = Buffer.from(m[1], 'base64url').toString('utf8');
-		const r = this.db
-			.prepare('SELECT source_id, url, alt FROM cat_variants WHERE account_id = ? AND id = ?')
-			.get(accountId, variantId) as { source_id: string; url: string; alt: string | null } | undefined;
-		if (!r) return undefined;
-		let url = r.url;
-		if (m[2]) {
-			const alt = r.alt ? (JSON.parse(r.alt) as string[]) : [];
-			url = alt[Number(m[2]) - 1];
-			if (!url) return undefined;
-		}
-		if (!url.includes('')) return url;
-		const ms = this.#masker(accountId, r.source_id);
-		return ms ? ms.masker.unmask(url) : undefined;
-	}
-
-	/** Upstream url sealed into a path segment (HLS rewriting via the play route). */
-	sealSegment(accountId: string, url: string): string {
-		return seal(this.keys.segment, url, 'seg:' + accountId).slice(3);
-	}
-
-	openSegment(accountId: string, sealed: string): string | undefined {
-		try {
-			return unseal(this.keys.segment, 'v1.' + sealed, 'seg:' + accountId);
-		} catch {
-			return undefined;
-		}
 	}
 
 	async dispose() {
@@ -814,6 +872,18 @@ export class CatalogService {
 		await this.queue.dispose();
 		this.db.close();
 	}
+}
+
+function mapVariants(
+	list: StreamVariant[],
+	f: (v: StreamVariant) => StreamVariant | undefined
+): StreamVariant[] {
+	const out: StreamVariant[] = [];
+	for (const v of list) {
+		const m = f(v);
+		if (m) out.push(m);
+	}
+	return out;
 }
 
 function programme(channelId: string, r: Row): EpgProgramme {
@@ -833,7 +903,10 @@ function encodeCursor(sort: string, k: string | number, i: string): string {
 	return Buffer.from(JSON.stringify({ s: sort, k, i }), 'utf8').toString('base64url');
 }
 
-function decodeCursor(cursor: string | undefined, sort: string): { k: string | number; i: string } | undefined {
+function decodeCursor(
+	cursor: string | undefined,
+	sort: string
+): { k: string | number; i: string } | undefined {
 	if (!cursor) return undefined;
 	try {
 		const c = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
@@ -841,7 +914,11 @@ function decodeCursor(cursor: string | undefined, sort: string): { k: string | n
 			k: string | number;
 			i: string;
 		};
-		if (c.s !== sort || typeof c.i !== 'string' || (typeof c.k !== 'string' && typeof c.k !== 'number'))
+		if (
+			c.s !== sort ||
+			typeof c.i !== 'string' ||
+			(typeof c.k !== 'string' && typeof c.k !== 'number')
+		)
 			return undefined;
 		return { k: c.k, i: c.i };
 	} catch {

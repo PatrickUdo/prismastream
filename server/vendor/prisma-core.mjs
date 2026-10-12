@@ -5158,7 +5158,8 @@ function createXmltvCollector(opts = {}) {
 			case "programme":
 				if (prog) {
 					if (!prog.title) prog.title = "—";
-					programmes.push(prog);
+					if (opts.onProgramme) opts.onProgramme(prog);
+					else programmes.push(prog);
 				}
 				prog = null;
 				return;
@@ -8977,6 +8978,95 @@ var TmdbClient = class {
 	}
 };
 //#endregion
+//#region src/lib/idb.ts
+var IdbUnavailableError = class extends Error {
+	reason;
+	constructor(reason, message) {
+		super(message ?? `IndexedDB ${reason}`);
+		this.name = "IdbUnavailableError";
+		this.reason = reason;
+	}
+};
+function openDb(factory, dbName, storeName, timeoutMs, version) {
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		const done = (fn) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			fn();
+		};
+		const timer = setTimeout(() => done(() => reject(new IdbUnavailableError("timeout", `IndexedDB "${dbName}" did not open in time`))), timeoutMs);
+		let req;
+		try {
+			req = version ? factory.open(dbName, version) : factory.open(dbName);
+		} catch (err) {
+			done(() => reject(new IdbUnavailableError("error", err?.message)));
+			return;
+		}
+		req.onupgradeneeded = () => {
+			const db = req.result;
+			if (!db.objectStoreNames.contains(storeName)) db.createObjectStore(storeName);
+		};
+		req.onblocked = () => {};
+		req.onerror = () => done(() => reject(new IdbUnavailableError("error", req.error?.message ?? "open failed")));
+		req.onsuccess = () => {
+			const db = req.result;
+			if (settled) {
+				db.close();
+				return;
+			}
+			if (!db.objectStoreNames.contains(storeName)) {
+				const next = db.version + 1;
+				db.close();
+				clearTimeout(timer);
+				settled = true;
+				openDb(factory, dbName, storeName, timeoutMs, next).then(resolve, reject);
+				return;
+			}
+			done(() => resolve(db));
+		};
+	});
+}
+/** An idb-keyval `UseStore` that never hangs and never blocks other tabs. */
+function safeStore(dbName, storeName, o = {}) {
+	const timeoutMs = o.timeoutMs ?? 4e3;
+	let dbp = null;
+	const open = () => {
+		const factory = o.factory ?? (typeof indexedDB !== "undefined" ? indexedDB : void 0);
+		if (!factory) return Promise.reject(new IdbUnavailableError("unsupported"));
+		if (dbp) return dbp;
+		const p = openDb(factory, dbName, storeName, timeoutMs).then((db) => {
+			const forget = () => {
+				if (dbp === p) dbp = null;
+			};
+			db.onversionchange = () => {
+				db.close();
+				forget();
+			};
+			db.onclose = forget;
+			return db;
+		});
+		dbp = p;
+		p.catch(() => {
+			if (dbp === p) dbp = null;
+		});
+		return p;
+	};
+	return async (txMode, callback) => {
+		const db = await open();
+		try {
+			return await callback(db.transaction(storeName, txMode).objectStore(storeName));
+		} catch (err) {
+			if (err?.name === "InvalidStateError") {
+				dbp = null;
+				return callback((await open()).transaction(storeName, txMode).objectStore(storeName));
+			}
+			throw err;
+		}
+	};
+}
+//#endregion
 //#region node_modules/idb-keyval/dist/index.js
 var dist_exports = /* @__PURE__ */ __exportAll({
 	clear: () => clear,
@@ -9172,7 +9262,7 @@ var idb = null;
 function db() {
 	idb ??= Promise.resolve().then(() => (init_dist(), dist_exports)).then((mod) => ({
 		mod,
-		store: mod.createStore("ps-tmdb", "kv")
+		store: safeStore("ps-tmdb", "kv")
 	}));
 	return idb;
 }

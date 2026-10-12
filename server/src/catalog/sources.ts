@@ -126,13 +126,19 @@ export function secretList(s: ResolvedSource): string[] {
 }
 
 /** Pasted `http://host/get.php?username=U&password=P` → parts. */
-export function parseXtreamUrl(input: string): { serverUrl: string; username: string; password: string } | undefined {
+export function parseXtreamUrl(
+	input: string
+): { serverUrl: string; username: string; password: string } | undefined {
 	try {
 		const u = new URL(input.trim());
 		const username = u.searchParams.get('username');
 		const password = u.searchParams.get('password');
 		if (!username || !password) return undefined;
-		return { serverUrl: normalizeServerUrl(`${u.protocol}//${u.host}${u.pathname}`), username, password };
+		return {
+			serverUrl: normalizeServerUrl(`${u.protocol}//${u.host}${u.pathname}`),
+			username,
+			password
+		};
 	} catch {
 		return undefined;
 	}
@@ -148,7 +154,10 @@ export function checkUrl(raw: string, allowPrivate: boolean, field: string): str
 	if (u.protocol !== 'http:' && u.protocol !== 'https:')
 		throw new SourceError('config', `${field}: alleen http en https`);
 	if (!hostAllowed(u.hostname, allowPrivate))
-		throw new SourceError('blocked_address', `${field}: privé- of lokale adressen zijn niet toegestaan`);
+		throw new SourceError(
+			'blocked_address',
+			`${field}: privé- of lokale adressen zijn niet toegestaan`
+		);
 	return u.toString();
 }
 
@@ -275,7 +284,9 @@ export class SourceRepo {
 
 	secretOf(rec: SourceRecord): SourceSecret {
 		if (!rec.sealed) return {};
-		return JSON.parse(unseal(this.#key, rec.sealed, this.#aad(rec.accountId, rec.id))) as SourceSecret;
+		return JSON.parse(
+			unseal(this.#key, rec.sealed, this.#aad(rec.accountId, rec.id))
+		) as SourceSecret;
 	}
 
 	resolve(rec: SourceRecord): ResolvedSource {

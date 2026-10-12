@@ -38,7 +38,7 @@ export interface Config {
 	demoSource: boolean;
 	/** Base url shown to TVs for the device login (verifyUrl). */
 	verifyUrl: string;
-	/** Server-side catalog (sources, merge, cache, play urls). */
+	/** Server-side catalog (sources, merge, cache; streams go device → provider). */
 	catalogEnabled: boolean;
 	/** Language for overviews/episode titles in the merged catalog. */
 	catalogLang: string;
@@ -100,7 +100,7 @@ export function loadConfig(
 		publicUrl: env.PUBLIC_URL ? env.PUBLIC_URL.replace(/\/+$/, '') : undefined,
 		trustProxy: bool(env.TRUST_PROXY, false),
 		allowSignup: bool(env.ALLOW_SIGNUP, !production),
-		proxyEnabled: bool(env.PROXY_ENABLED, true),
+		proxyEnabled: bool(env.PROXY_ENABLED, false),
 		proxyAllowPrivate: bool(env.PROXY_ALLOW_PRIVATE, false),
 		proxyMaxBytes: int(env.PROXY_MAX_BYTES, 100 * 1024 * 1024),
 		proxyTimeoutMs: int(env.PROXY_TIMEOUT_MS, 20_000),
@@ -119,7 +119,7 @@ export function loadConfig(
 		catalogEnabled: bool(env.CATALOG_ENABLED, true),
 		catalogLang: (env.CATALOG_LANG || 'nl').toLowerCase(),
 		catalogRefreshHours: int(env.CATALOG_REFRESH_HOURS, 12),
-		buildMemoryMb: int(env.CATALOG_BUILD_MEMORY_MB, 320),
+		buildMemoryMb: int(env.CATALOG_BUILD_MEMORY_MB, 256),
 		buildInline: bool(env.CATALOG_BUILD_INLINE, false),
 		tmdbApiKey: env.TMDB_API_KEY?.trim() || undefined,
 		tmdbMaxTitles: int(env.TMDB_MAX_TITLES, 400),

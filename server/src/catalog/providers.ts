@@ -41,19 +41,16 @@ export interface FetchLimits {
 	xmltvMaxBytes: number;
 }
 
-export interface LoadedCatalog {
-	movies: RawMovie[];
-	series: RawSeries[];
-	channels: RawChannel[];
-	epgUrls: string[];
-	account?: XtreamAccount;
-	warnings: string[];
-}
 
 export const EPG_PAST = 6 * 3600_000;
 export const EPG_FUTURE = 48 * 3600_000;
 
-function opts(src: ResolvedSource, l: FetchLimits, maxBytes: number, timeoutMs = l.timeoutMs): FetchOptions {
+function opts(
+	src: ResolvedSource,
+	l: FetchLimits,
+	maxBytes: number,
+	timeoutMs = l.timeoutMs
+): FetchOptions {
 	return {
 		allowPrivate: l.allowPrivate,
 		timeoutMs,
@@ -73,7 +70,11 @@ export function xtreamCreds(src: ResolvedSource): XtreamCredentials {
 	};
 }
 
-function apiUrl(c: XtreamCredentials, action?: string, params: Record<string, string> = {}): string {
+function apiUrl(
+	c: XtreamCredentials,
+	action?: string,
+	params: Record<string, string> = {}
+): string {
 	const q = new URLSearchParams({ username: c.username, password: c.password });
 	if (action) q.set('action', action);
 	for (const [k, v] of Object.entries(params)) q.set(k, v);
@@ -99,16 +100,28 @@ export async function xtreamAccount(src: ResolvedSource, l: FetchLimits): Promis
 	}
 }
 
+/** Receives every mapped item while a list streams in (nothing is collected in memory). */
+export type ItemSink = (kind: 'm' | 's' | 'c', item: RawMovie | RawSeries | RawChannel) => void;
+
+export interface LoadResult {
+	account?: XtreamAccount;
+	/** EPG urls announced in an M3U header. */
+	epgUrls: string[];
+	warnings: string[];
+	counts: { movies: number; series: number; channels: number };
+}
+
 /**
  * Full Xtream catalog. Lists are fetched one after another (many accounts allow only one
- * connection) and streamed item by item into the mappers. A failing list is a warning; all
- * three failing is an error.
+ * connection) and streamed item by item through the mappers into `sink`. A failing list is a
+ * warning; all three failing is an error. Empty or missing categories are fine.
  */
 export async function loadXtream(
 	src: ResolvedSource,
 	l: FetchLimits,
+	sink: ItemSink,
 	onStep?: (step: string, ratio: number) => void
-): Promise<LoadedCatalog> {
+): Promise<LoadResult> {
 	const creds = xtreamCreds(src);
 	onStep?.('auth', 0);
 	const account = await xtreamAccount(src, l);
@@ -123,49 +136,63 @@ export async function loadXtream(
 			return undefined;
 		}
 	};
-	const list = async <T>(
+	const list = async (
+		kind: 'm' | 's' | 'c',
 		catAction: string,
 		action: string,
-		map: (item: Record<string, unknown>, cats: Map<string, string>) => T | undefined
-	): Promise<{ out: T[]; ok: boolean }> => {
+		map: (
+			item: Record<string, unknown>,
+			cats: Map<string, string>
+		) => RawMovie | RawSeries | RawChannel | undefined
+	): Promise<{ n: number; ok: boolean }> => {
 		const cats = categoryMap(await soft(fetchJson(apiUrl(creds, catAction), small), catAction));
-		const out: T[] = [];
-		const n = await soft(
+		let n = 0;
+		const seen = new Set<string>();
+		const res = await soft(
 			streamJsonList(apiUrl(creds, action), big, (item) => {
 				if (!item || typeof item !== 'object' || Array.isArray(item)) return;
 				const v = map(item as Record<string, unknown>, cats);
-				if (v) out.push(v);
+				if (!v) return;
+				// Panels sometimes list the same stream twice (several categories).
+				if (seen.has(v.providerId)) return;
+				seen.add(v.providerId);
+				n++;
+				sink(kind, v);
 			}),
 			action
 		);
-		return { out, ok: n !== undefined };
+		return { n, ok: res !== undefined };
 	};
 	onStep?.('movies', 0.1);
-	const movies = await list('get_vod_categories', 'get_vod_streams', (i, cats) =>
+	const movies = await list('m', 'get_vod_categories', 'get_vod_streams', (i, cats) =>
 		mapVodStream(i, { sourceId: src.id, creds, cats })
 	);
 	onStep?.('series', 0.4);
-	const series = await list('get_series_categories', 'get_series', (i, cats) =>
+	const series = await list('s', 'get_series_categories', 'get_series', (i, cats) =>
 		mapSeries(i, { sourceId: src.id, cats })
 	);
 	onStep?.('live', 0.7);
-	const channels = await list('get_live_categories', 'get_live_streams', (i, cats) =>
+	const channels = await list('c', 'get_live_categories', 'get_live_streams', (i, cats) =>
 		mapLiveStream(i, { sourceId: src.id, creds, cats })
 	);
 	if (!movies.ok && !series.ok && !channels.ok)
-		throw new SourceError('invalid_response', `Geen enkele lijst kon worden geladen (${warnings.join('; ')})`);
+		throw new SourceError(
+			'invalid_response',
+			`Geen enkele lijst kon worden geladen (${warnings.join('; ')})`
+		);
 	return {
-		movies: movies.out,
-		series: series.out,
-		channels: channels.out,
-		epgUrls: [],
 		account,
-		warnings
+		epgUrls: [],
+		warnings,
+		counts: { movies: movies.n, series: series.n, channels: channels.n }
 	};
 }
 
-/** M3U download, parsed while it streams in. */
-export async function loadM3U(src: ResolvedSource, l: FetchLimits): Promise<LoadedCatalog> {
+/**
+ * M3U download, parsed while it streams in. (The parser groups episodes into series, so the
+ * parsed entries are held until the end of the file, then handed to `sink`.)
+ */
+export async function loadM3U(src: ResolvedSource, l: FetchLimits, sink: ItemSink): Promise<LoadResult> {
 	if (!src.playlistUrl) throw new SourceError('config', 'Geen playlist-url');
 	const o = opts(src, l, l.m3uMaxBytes, Math.max(l.timeoutMs, 45_000));
 	const up = await openUpstream(src.playlistUrl, o);
@@ -183,13 +210,11 @@ export async function loadM3U(src: ResolvedSource, l: FetchLimits): Promise<Load
 				? 'De server gaf een webpagina in plaats van een playlist'
 				: 'De playlist bevat geen items (is dit een M3U-bestand?)'
 		);
-	return {
-		movies: r.movies,
-		series: r.series,
-		channels: r.channels,
-		epgUrls: r.epgUrls,
-		warnings: []
-	};
+	const counts = { movies: r.movies.length, series: r.series.length, channels: r.channels.length };
+	for (const m of r.movies.splice(0)) sink('m', m);
+	for (const x of r.series.splice(0)) sink('s', x);
+	for (const c of r.channels.splice(0)) sink('c', c);
+	return { epgUrls: r.epgUrls, warnings: [], counts };
 }
 
 /** EPG candidates: explicit override, Xtream xmltv.php, or the M3U header urls. */
@@ -199,28 +224,42 @@ export function epgCandidates(src: ResolvedSource, headerUrls: string[]): string
 	return headerUrls.filter((u) => /^https?:\/\//i.test(u)).slice(0, 3);
 }
 
-/** Streams XMLTV and keeps programmes of known channels within [now-6h, now+48h]. */
+/**
+ * Streams XMLTV and hands every programme of a known channel within [now-6h, now+48h] to
+ * `onProgramme` (nothing is collected). Returns the number of programmes. `onStart` runs before
+ * each attempt, so a caller can reset what a failed attempt delivered.
+ */
 export async function loadXmltv(
 	src: ResolvedSource,
 	urls: string[],
 	channelIds: Set<string>,
 	l: FetchLimits,
+	onProgramme: (p: EpgProgramme) => void,
+	onStart: () => void = () => {},
 	now = Date.now()
-): Promise<EpgProgramme[]> {
-	if (!channelIds.size || !urls.length) return [];
+): Promise<number> {
+	if (!channelIds.size || !urls.length) return 0;
 	let last: unknown;
 	for (const url of urls) {
 		try {
+			onStart();
 			const o = opts(src, l, l.xmltvMaxBytes, Math.max(l.timeoutMs, 60_000));
 			o.retries = 1;
 			const up = await openUpstream(url, o);
+			let n = 0;
 			const c = createXmltvCollector({
 				from: now - EPG_PAST,
 				to: now + EPG_FUTURE,
-				channelIds
+				channelIds,
+				onProgramme: (p) => {
+					n++;
+					onProgramme(p);
+				}
 			});
-			for await (const chunk of maybeGunzipText(up.body, o.secrets, l.xmltvMaxBytes)) c.write(chunk);
-			return c.finish().programmes;
+			for await (const chunk of maybeGunzipText(up.body, o.secrets, l.xmltvMaxBytes))
+				c.write(chunk);
+			c.finish();
+			return n;
 		} catch (err) {
 			last = err;
 		}

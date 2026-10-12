@@ -2,6 +2,7 @@
 // and deduplicated (a second request for a queued account merges its force flags). Each build
 // runs in a fresh worker thread with its own heap limit; when it exits, all its memory is gone.
 import { Worker } from 'node:worker_threads';
+import { scrubUrls } from '../util.ts';
 import type { BuildEvent, BuildJob } from './build.ts';
 
 export type QueueState = 'idle' | 'queued' | 'building';
@@ -19,7 +20,7 @@ export interface QueueHooks {
 	/** Creates the job (sources decrypted at start, so later edits are picked up). */
 	makeJob(accountId: string, force: string[]): BuildJob | null;
 	onEvent(accountId: string, e: BuildEvent): void;
-	onFinished(accountId: string, error?: string): void;
+	onFinished(accountId: string, error?: string, code?: string): void;
 }
 
 export interface QueueOptions {
@@ -94,22 +95,29 @@ export class BuildQueue {
 		this.#pending.delete(accountId);
 		this.#running = accountId;
 		const prevError = this.#status.get(accountId)?.error;
-		this.#status.set(accountId, { state: 'building', progress: 0, startedAt: Date.now(), error: prevError });
+		this.#status.set(accountId, {
+			state: 'building',
+			progress: 0,
+			startedAt: Date.now(),
+			error: prevError
+		});
 		let error: string | undefined;
+		let code: string | undefined;
 		try {
 			const job = this.#hooks.makeJob(accountId, force);
 			if (job) await this.#run(accountId, job);
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
+			code = (err as { code?: string }).code ?? 'build_failed';
 		}
 		this.#running = null;
 		this.#worker = null;
 		if (error) this.#status.set(accountId, { state: 'idle', error });
 		else this.#status.delete(accountId);
 		try {
-			this.#hooks.onFinished(accountId, error);
+			this.#hooks.onFinished(accountId, error, code);
 		} catch (err) {
-			console.error('[catalog] onFinished failed', (err as Error).message);
+			console.error('[catalog] onFinished failed', scrubUrls((err as Error).message));
 		}
 		// Requeued while running: keep the queued state.
 		if (this.#pending.has(accountId)) this.#status.set(accountId, { state: 'queued' });
@@ -136,14 +144,22 @@ export class BuildQueue {
 		await new Promise<void>((resolve, reject) => {
 			const worker = new Worker(new URL('./worker.ts', import.meta.url), {
 				workerData: job,
-				resourceLimits: { maxOldGenerationSizeMb: this.#opts.memoryMb, maxYoungGenerationSizeMb: 16 }
+				resourceLimits: {
+					maxOldGenerationSizeMb: this.#opts.memoryMb,
+					maxYoungGenerationSizeMb: 16
+				}
 			});
 			this.#worker = worker;
 			let failed: string | undefined;
-			const timer = setTimeout(() => {
-				failed = 'De build duurde te lang en is afgebroken';
-				void worker.terminate();
-			}, this.#opts.timeoutMs ?? 30 * 60_000);
+			let failedCode = 'build_failed';
+			const timer = setTimeout(
+				() => {
+					failed = 'De build duurde te lang en is afgebroken';
+				failedCode = 'timeout';
+					void worker.terminate();
+				},
+				this.#opts.timeoutMs ?? 30 * 60_000
+			);
 			timer.unref();
 			worker.on('message', (m: Msg) => {
 				if (m.type === 'done') return;
@@ -154,6 +170,7 @@ export class BuildQueue {
 				this.#event(accountId, m);
 			});
 			worker.on('error', (err: Error & { code?: string }) => {
+				if (err.code === 'ERR_WORKER_OUT_OF_MEMORY') failedCode = 'too_large';
 				failed =
 					err.code === 'ERR_WORKER_OUT_OF_MEMORY'
 						? 'De catalogus is te groot voor het geheugenbudget van de server'
@@ -161,7 +178,7 @@ export class BuildQueue {
 			});
 			worker.on('exit', () => {
 				clearTimeout(timer);
-				if (failed) reject(new Error(failed));
+				if (failed) reject(Object.assign(new Error(failed), { code: failedCode }));
 				else resolve();
 			});
 		});

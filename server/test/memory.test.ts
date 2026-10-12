@@ -1,7 +1,9 @@
-// Memory and speed with a big provider: 50.000 items (40.000 VOD entries, 5.000 series,
-// 5.000 live channels) from a local mock Xtream server, built in the worker thread.
-// Measures the peak RSS of the whole process (main thread + build worker) and the build time.
-// Budget: container 768 MB, Node --max-old-space-size=512; target peak RSS < 450 MB.
+// Memory and speed with a very big provider: 300.000 items with realistic Xtream fields
+// (180.000 VOD entries in two language versions, plus duplicates and empty categories; 45.000
+// series with plot/cast; 30.000 live channels) and XMLTV for all 30.000 channels (840.000
+// programmes in the window), from a mock Xtream server in its own process, built in the worker.
+// Measures the peak RSS of the whole server process (main thread + build worker), the build time
+// and query times. Budget: container 768 MB; target RSS < 500 MB, worker heap limit 256 MB.
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -16,7 +18,15 @@ before(async () => {
 	// The mock provider runs in its own process, so only the server is measured.
 	const proc = spawn(
 		process.execPath,
-		[new URL('./mock-iptv-server.ts', import.meta.url).pathname, JSON.stringify({ movies: 40_000, series: 5_000, channels: 5_000 })],
+		[new URL('./mock-iptv-server.ts', import.meta.url).pathname, JSON.stringify({
+				movies: 180_000,
+				series: 45_000,
+				channels: 30_000,
+				epgChannels: 30_000,
+				epgHours: 2,
+				rich: false,
+				duplicates: true
+			})],
 		{ stdio: ['ignore', 'pipe', 'inherit'] }
 	);
 	const [chunk] = (await once(proc.stdout!, 'data')) as [Buffer];
@@ -29,8 +39,8 @@ after(async () => {
 
 const MB = 1024 * 1024;
 
-describe('memory with 50.000 items', () => {
-	it('builds within the memory budget and serves queries fast', { timeout: 180_000 }, async (t) => {
+describe('memory with 300.000 items', () => {
+	it('builds within the memory budget and serves queries fast', { timeout: 600_000 }, async (t) => {
 		ctx = setup({ proxyAllowPrivate: true, demoSource: false });
 		const a = await newAccount(ctx.call);
 		global.gc?.();
@@ -52,9 +62,10 @@ describe('memory with 50.000 items', () => {
 
 		const meta = (await (await ctx.call('/v1/catalog/meta', { token: a.token })).json()) as Record<string, any>;
 		assert.equal(meta.status, 'ready', JSON.stringify(meta).slice(0, 300));
-		assert.equal(meta.counts.movies, 20_000);
-		assert.ok(meta.counts.series > 4_500);
-		assert.ok(meta.counts.channels > 4_000);
+		assert.equal(meta.counts.movies, 90_000);
+		assert.ok(meta.counts.series > 44_000);
+		assert.ok(meta.counts.channels > 29_000);
+		assert.ok(meta.counts.programmes > 800_000);
 
 		const q = async (path: string) => {
 			const s = performance.now();
@@ -75,7 +86,7 @@ describe('memory with 50.000 items', () => {
 		assert.ok(search1.body.movies.some((m: { title: string }) => m.title === 'Mock Film 1234'));
 
 		const report = {
-			items: 50_000,
+			items: 300_000,
 			buildSeconds: Math.round(buildMs / 100) / 10,
 			baselineRssMb: Math.round(baseline / MB),
 			peakRssMb: Math.round(peak / MB),
@@ -90,8 +101,8 @@ describe('memory with 50.000 items', () => {
 			searchNextMs: Math.round(search2.ms)
 		};
 		t.diagnostic(JSON.stringify(report));
-		console.log('[memory-50k]', JSON.stringify(report));
-		assert.ok(report.peakRssMb < 450, `peak RSS ${report.peakRssMb} MB`);
+		console.log('[memory-300k]', JSON.stringify(report));
+		assert.ok(report.peakRssMb < 500, `peak RSS ${report.peakRssMb} MB`);
 		assert.ok(report.titlesMs < 500 && report.page2Ms < 500 && report.detailMs < 500);
 	});
 });

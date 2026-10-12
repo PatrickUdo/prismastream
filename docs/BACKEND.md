@@ -133,21 +133,21 @@ De gebruiker wil dat synchroniseren "gewoon" werkt via deze app en deze server: 
 
 ## Status (server, Agent L)
 
-Gebouwd en getest (`cd server && npm test`: 61 tests; root `npm test` en `npm run check` groen):
+Gebouwd en getest (`cd server && npm test`: 72 tests; root `npm test` en `npm run check` groen):
 
 - **Kern op Node:** `src/core/node.ts` (object-API) → `npm run build:core:node` → `server/vendor/prisma-core.mjs` (ESM, node24, saxes inbegrepen). Types: `server/vendor/prisma-core.d.mts` (met de hand; `src/core/node.test.ts` bewaakt dat de exports gelijk blijven). De bundel staat in git (server en tests werken zonder root-build); de Dockerfile bouwt hem altijd opnieuw uit de bron.
 - **Accounts:** e-mail + zero-knowledge-login, tv-login met ECDH-verzegelde sleutel, `signupCode`, lockout. Legacy `/v1/accounts` en pairing werken nog.
-- **Bronnen en catalogus:** alle endpoints uit dit document; opslag in SQLite (`DATA_DIR/catalog.db`) plus ruwe gzip-NDJSON per bron in `DATA_DIR/cache/<account>/<bron>/`. Builds in een worker thread (1 tegelijk), scheduler elke 12 uur, lazy Xtream-series, optionele TMDB-verrijking met gedeelde cache.
-- **Play-urls:** `pt_`-tokens per apparaat, 302 of `?via=proxy` (HLS herschreven naar verzegelde segment-urls, MPEG-TS en Range streamend, `X-Accel-Buffering: no`).
-- **Gemeten (50.000 items):** build ± 2 s, piek-RSS ± 390–440 MB lokaal en 386 MB in de container (`--memory 768m`), lijstqueries 1–2 ms. Zie `server/README.md`.
+- **Bronnen en catalogus:** alle endpoints uit dit document; opslag in SQLite (`DATA_DIR/catalog.db`) plus ruwe gzip-NDJSON per bron in `DATA_DIR/cache/<account>/<bron>/`. Builds in een worker thread (1 tegelijk), streamend en in batches, met een nieuwe generatie per build, scheduler elke 12 uur, lazy Xtream-series, optionele TMDB-verrijking met gedeelde cache.
+- **Stream-urls:** de server zit nooit in het pad van video. `titles/:id` en `channels` geven de echte provider-urls (inloggegevens per verzoek ingevuld, `Cache-Control: private, no-store`, geen ETag); de apparaten streamen zelf. Play-routes, play-tokens en de stream-proxy zijn verwijderd; de oude CORS-proxy staat standaard uit.
+- **Gemeten (300.000 items + 840.000 EPG-programma's):** build ± 16 s lokaal en 25 s in de container. Piek-RSS van het serverproces 455–480 MB lokaal (macOS) en 361–447 MB in de container (`--memory 768m`, incl. queries en een geforceerde rebuild). De build draait in batches, per soort, met een eigen generatie in SQLite. Zie `server/README.md`.
 - **Docker:** `docker build -f server/Dockerfile -t prismastream-server .` (context = repo-root), non-root, healthcheck, `NODE_OPTIONS=--max-old-space-size=512`.
 
 ## Wijzigingen
 
 Aanvullingen en precisering van het contract door de server (alles additief, tenzij anders vermeld):
 
-1. **Play-urls:** formaat `${PUBLIC_URL}/v1/play/<playToken>/<base64url(variantId)>[~n][.ext]`. `~n` = `altUrls[n-1]` (live: de `.ts`-tweeling van een Xtream-`.m3u8`); `.ext` is de extensie van de echte stream (helpt AVPlayer/ExoPlayer bij het herkennen van HLS). De client hoeft dit niet zelf te bouwen: elke `variants[].url`/`altUrls` in `titles/:id` en `channels` is al een play-url voor het apparaat dat de aanvraag doet.
-2. **Play-token:** `GET /v1/play-token` → `{ playToken, prefix }` (huidig), `POST /v1/play-token` → nieuw token; alle oude play-urls van dat apparaat vervallen. Afmelden van het apparaat trekt ze ook in. `?via=proxy` werkt op elke play-url (ook HEAD en Range); segmenten lopen via `/v1/play/<token>/s/<verzegeld>` (intern, niet zelf bouwen).
+1. ~~**Play-urls:**~~ *Vervallen, zie 14.* formaat `${PUBLIC_URL}/v1/play/<playToken>/<base64url(variantId)>[~n][.ext]`. `~n` = `altUrls[n-1]` (live: de `.ts`-tweeling van een Xtream-`.m3u8`); `.ext` is de extensie van de echte stream (helpt AVPlayer/ExoPlayer bij het herkennen van HLS). De client hoeft dit niet zelf te bouwen: elke `variants[].url`/`altUrls` in `titles/:id` en `channels` is al een play-url voor het apparaat dat de aanvraag doet.
+2. ~~**Play-token:**~~ *Vervallen, zie 14.* `GET /v1/play-token` → `{ playToken, prefix }` (huidig), `POST /v1/play-token` → nieuw token; alle oude play-urls van dat apparaat vervallen. Afmelden van het apparaat trekt ze ook in. `?via=proxy` werkt op elke play-url (ook HEAD en Range); segmenten lopen via `/v1/play/<token>/s/<verzegeld>` (intern, niet zelf bouwen).
 3. **`StreamVariant.upstreamHttp: boolean`** (alleen in API-antwoorden): `true` als de echte stream `http:` is. Dan heeft de https-webversie `?via=proxy` nodig.
 4. **Series in `titles/:id`** hebben altijd `seasons` (eventueel `[]` als de provider faalde; de server probeert het na 5 minuten opnieuw). `?kids=1` op `titles/:id` geeft `403 kids_restricted` voor titels die niet kindveilig zijn.
 5. **Bronnen:** extra velden `errorCode`, `lastWarning`, `epgSyncAt`; `account` bevat ook `activeConnections` en `isTrial`. `DELETE /v1/sources/sample` verwijdert de demo niet maar zet hem uit (`{ ok: true, disabled: true }`); andere bronnen: `200 { ok: true }`. `POST`/`PATCH` geven bij ongeldige invoer `400 invalid_source` of `400 blocked_address`.
@@ -159,3 +159,14 @@ Aanvullingen en precisering van het contract door de server (alles additief, ten
 11. **CORS:** `PATCH` en de header `If-None-Match` zijn toegestaan.
 12. **Nieuwe env:** `DEMO_SOURCE`, `DATA_DIR`, `SERVER_KEY(_FILE)`, `SIGNUP_CODE`, `TMDB_API_KEY`, `VERIFY_URL`, `CATALOG_*`, `*_MAX_BYTES`, `FETCH_*` (zie `server/README.md`).
 13. **Uitnodigingscodes:** `signupCode` in `POST /v1/auth/register` (en de legacy `POST /v1/accounts`) mag de hoofdcode `SIGNUP_CODE` zijn (herbruikbaar) of een eenmalige uitnodigingscode (`XXXXX-XXXXX`, Crockford-base32; hoofdletters, spaties en streepjes maken niet uit). Een gebruikte, verlopen of ingetrokken code geeft `403 invalid_signup_code` (legacy: `403 signup_disabled`). Codes maak je met de CLI (`node src/cli.ts invite create`, zie `server/README.md`).
+14. **De server zit nooit in het pad van videostreams** (besluit gebruiker; vervangt de sectie "Play-urls" hierboven en de punten 1 en 2):
+    - `/v1/play/:token/:variant` (302 en `?via=proxy`), het HLS-herschrijven, de segment-proxy en `GET`/`POST /v1/play-token` zijn verwijderd (404). Play-tokens bestaan niet meer.
+    - `GET /v1/catalog/titles/:id` en `GET /v1/catalog/channels` geven in `StreamVariant.url` en `altUrls` de **echte upstream-urls**, met de inloggegevens van de bron op het moment van het verzoek ingevuld, alleen voor het geauthenticeerde account. Deze antwoorden hebben `Cache-Control: private, no-store` en **geen ETag** (dus ook geen 304). `upstreamHttp` blijft. Varianten waarvan de bron niet meer bestaat, vallen weg.
+    - Lijsten (`titles`, `home`, `search`, `recommend`) bevatten nooit stream-urls (alleen TitleCards en ChannelCards).
+    - De oude CORS-proxy `/v1/proxy/:token` en `POST /v1/proxy-token` staan standaard **uit** (`PROXY_ENABLED=false`, ook in productie): de routes bestaan dan niet (404). Hij wordt alleen nog gebruikt door de lokale modus van de webversie (`src/lib/sources` via `getSyncProxyPrefix()` in `src/lib/sync`) om playlists en API's op te halen; de client moet een 404 op `/v1/proxy-token` netjes opvangen (geen proxy).
+    - Logs: alleen methode, pad zonder query (de detail-route als `/v1/catalog/titles/:id`), status en duur; fout- en waarschuwingsregels bevatten nooit urls (`<url>`).
+15. **Grote catalogi (geheugenzuinige build):** `GET /v1/catalog/meta` geeft na een mislukte build `status: 'error'` met `error` (begrijpelijke tekst) en `errorCode` (`too_large` | `timeout` | `build_failed`). `counts`, `genres` enzovoort horen dan bij de vorige, nog actieve catalogus, en alle catalogus-endpoints blijven die serveren. Een lege 'ready' komt dus niet meer voor als de build faalde. Bij een geslaagde build verdwijnen `error` en `errorCode`. Verder:
+    - de build verwerkt films, series en zenders na elkaar en in batches;
+    - de EPG gaat streamend naar SQLite; per zender en starttijd wordt één programma bewaard;
+    - `CATALOG_BUILD_MEMORY_MB` is standaard 256;
+    - gemeten met 300.000 items + 840.000 EPG-programma's: zie `server/README.md`.

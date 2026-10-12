@@ -204,6 +204,8 @@ export interface XmltvOptions {
 	from?: number;
 	to?: number;
 	channelIds?: Set<string>;
+	/** Streaming mode: programmes go to this callback instead of being collected. */
+	onProgramme?: (p: EpgProgramme) => void;
 }
 export interface XmltvResult {
 	programmes: EpgProgramme[];

@@ -1,30 +1,31 @@
-// HTTP routes for sources, the catalog API and play urls (docs/BACKEND.md).
+// HTTP routes for sources and the catalog API (docs/BACKEND.md). The server is never in the path
+// of a video stream: detail and channel responses carry the real upstream urls (credentials filled
+// in per request, `Cache-Control: private, no-store`), and devices stream directly from the provider.
 import { createHash } from 'node:crypto';
 import type { Context, Hono, MiddlewareHandler } from 'hono';
 import type { Env } from '../env.ts';
 import type { Config } from '../config.ts';
-import { parseTarget, ProxyError, proxyFetch } from '../proxy.ts';
 import type { RateLimiter } from '../ratelimit.ts';
-import type { DeviceRow } from '../store.ts';
 import { redactText } from './core.ts';
 import { toSourceError, SourceError } from './fetch.ts';
 import { epgCandidates, loadM3U, loadXtream, type TestResult } from './providers.ts';
 import type { CatalogService } from './service.ts';
-import { SAMPLE_ID, secretList, validateInput, type ResolvedSource, type SourceInput } from './sources.ts';
-
+import {
+	SAMPLE_ID,
+	secretList,
+	validateInput,
+	type ResolvedSource,
+	type SourceInput
+} from './sources.ts';
 
 export interface CatalogRouteDeps {
 	config: Config;
 	catalog: CatalogService;
 	limiter: RateLimiter;
 	auth: MiddlewareHandler<Env>;
-	clientIp: (c: Context<Env>) => string;
-	publicBase: (c: Context<Env>) => string;
 	readJson: (c: Context) => Promise<Record<string, unknown>>;
 	err: (c: Context, status: number, error: string, message?: string, extra?: object) => Response;
 	tooMany: (c: Context, retry: number) => Response;
-	authFailLimit: number;
-	authFailWindow: number;
 }
 
 const JSON_TYPE = 'application/json; charset=UTF-8';
@@ -32,6 +33,16 @@ const LIST_CACHE = 'private, no-cache';
 
 function etagOf(body: string): string {
 	return `W/"${createHash('sha1').update(body).digest('base64url').slice(0, 27)}"`;
+}
+
+/**
+ * JSON that contains stream urls with credentials: never cached anywhere, no ETag (an ETag would
+ * let caches and conditional requests keep a copy), only for the authenticated account.
+ */
+export function sendPrivate(c: Context, body: string): Response {
+	c.header('Cache-Control', 'private, no-store');
+	c.header('Vary', 'Authorization');
+	return c.body(body, 200, { 'content-type': JSON_TYPE });
 }
 
 /** JSON body with ETag; `If-None-Match` → 304. */
@@ -118,7 +129,12 @@ export function registerCatalogRoutes(app: Hono<Env>, d: CatalogRouteDeps) {
 			return c.json(sources.toPublic(rec), 201);
 		} catch (e) {
 			const se = toSourceError(e);
-			return err(c, 400, se.code === 'blocked_address' ? 'blocked_address' : 'invalid_source', se.message);
+			return err(
+				c,
+				400,
+				se.code === 'blocked_address' ? 'blocked_address' : 'invalid_source',
+				se.message
+			);
 		}
 	});
 
@@ -136,7 +152,12 @@ export function registerCatalogRoutes(app: Hono<Env>, d: CatalogRouteDeps) {
 			return c.json(sources.toPublic(r.record));
 		} catch (e) {
 			const se = toSourceError(e);
-			return err(c, 400, se.code === 'blocked_address' ? 'blocked_address' : 'invalid_source', se.message);
+			return err(
+				c,
+				400,
+				se.code === 'blocked_address' ? 'blocked_address' : 'invalid_source',
+				se.message
+			);
 		}
 	});
 
@@ -168,7 +189,8 @@ export function registerCatalogRoutes(app: Hono<Env>, d: CatalogRouteDeps) {
 			const retry = limiter.hit('refresh:' + accountId, 6, 60 * 60_000);
 			if (retry) return tooMany(c, retry);
 		}
-		if (sourceId && !sources.get(accountId, sourceId)) return err(c, 404, 'not_found', 'Source not found');
+		if (sourceId && !sources.get(accountId, sourceId))
+			return err(c, 404, 'not_found', 'Source not found');
 		const st = catalog.refresh(accountId, { force, sourceId });
 		return c.json({ queued: true, status: 'building', state: st.state }, 202);
 	});
@@ -192,7 +214,8 @@ export function registerCatalogRoutes(app: Hono<Env>, d: CatalogRouteDeps) {
 		const kind = c.req.query('kind');
 		if (genre && !SLUG_RE.test(genre)) return err(c, 400, 'invalid_genre', 'Invalid genre slug');
 		if (lang && !LANG_RE.test(lang)) return err(c, 400, 'invalid_lang', 'Invalid language code');
-		if (kind && kind !== 'movie' && kind !== 'series') return err(c, 400, 'invalid_kind', 'kind must be movie or series');
+		if (kind && kind !== 'movie' && kind !== 'series')
+			return err(c, 400, 'invalid_kind', 'kind must be movie or series');
 		return sendJson(
 			c,
 			catalog.titles(acc(c), {
@@ -208,12 +231,16 @@ export function registerCatalogRoutes(app: Hono<Env>, d: CatalogRouteDeps) {
 	});
 
 	app.get('/v1/catalog/titles/:id', auth, async (c) => {
-		const device = c.get('device');
-		const play = catalog.playMapper(d.publicBase(c), catalog.playToken(device));
-		const r = await catalog.title(device.accountId, c.req.param('id') ?? '', kidsOf(c), play);
+		const accountId = acc(c);
+		const r = await catalog.title(
+			accountId,
+			c.req.param('id') ?? '',
+			kidsOf(c),
+			catalog.directMapper(accountId)
+		);
 		if (r.status === 404) return err(c, 404, 'not_found', 'Title not found');
 		if (r.status === 403) return err(c, 403, 'kids_restricted', 'Not available in kids mode');
-		return sendJson(c, r.body!);
+		return sendPrivate(c, r.body!);
 	});
 
 	app.get('/v1/catalog/search', auth, (c) => {
@@ -237,16 +264,15 @@ export function registerCatalogRoutes(app: Hono<Env>, d: CatalogRouteDeps) {
 	});
 
 	app.get('/v1/catalog/channels', auth, (c) => {
-		const device = c.get('device');
+		const accountId = acc(c);
 		const lang = c.req.query('lang');
 		if (lang && !LANG_RE.test(lang)) return err(c, 400, 'invalid_lang', 'Invalid language code');
-		const play = catalog.playMapper(d.publicBase(c), catalog.playToken(device));
-		return sendJson(
+		return sendPrivate(
 			c,
 			catalog.channels(
-				device.accountId,
+				accountId,
 				{ group: c.req.query('group')?.slice(0, 200) || undefined, lang, kids: kidsOf(c) },
-				play
+				catalog.directMapper(accountId)
 			)
 		);
 	});
@@ -266,81 +292,6 @@ export function registerCatalogRoutes(app: Hono<Env>, d: CatalogRouteDeps) {
 		const ids = listOf(c.req.query('channels'), 200);
 		return sendJson(c, JSON.stringify(catalog.nowNext(acc(c), ids)), 'private, max-age=30');
 	});
-
-	// ---- play urls --------------------------------------------------------------------
-
-	const tokenJson = (c: Context<Env>, token: string) =>
-		c.json({ playToken: token, prefix: `${d.publicBase(c)}/v1/play/${token}/` });
-
-	app.get('/v1/play-token', auth, (c) => tokenJson(c, catalog.playToken(c.get('device'))));
-	app.post('/v1/play-token', auth, (c) => tokenJson(c, catalog.rotatePlayToken(c.get('device'))));
-
-	const playDevice = (c: Context<Env>): DeviceRow | Response => {
-		const ip = d.clientIp(c);
-		const blocked = limiter.blocked('authfail:' + ip, d.authFailLimit);
-		if (blocked) return tooMany(c, blocked);
-		const device = catalog.deviceForPlayToken(c.req.param('token') ?? '');
-		if (!device) {
-			limiter.hit('authfail:' + ip, d.authFailLimit, d.authFailWindow);
-			return err(c, 401, 'unauthorized', 'Invalid play token');
-		}
-		const retry = limiter.hit('proxy:' + device.id, config.proxyRateLimitPerMin, 60_000);
-		if (retry) return tooMany(c, retry);
-		return device;
-	};
-
-	const stream = async (c: Context<Env>, device: DeviceRow, url: string) => {
-		if (!config.proxyEnabled) return err(c, 403, 'proxy_disabled', 'Proxy is disabled');
-		const token = c.req.param('token') ?? '';
-		const base = `${d.publicBase(c)}/v1/play/${token}/s/`;
-		try {
-			const target = parseTarget(url, config.proxyAllowPrivate);
-			const headers: Record<string, string | undefined> = {};
-			for (const [k, v] of c.req.raw.headers) headers[k.toLowerCase()] = v;
-			const res = await proxyFetch(target, {
-				allowPrivate: config.proxyAllowPrivate,
-				// Live MPEG-TS never ends: no size cap here, only timeouts and the rate limit.
-				maxBytes: Number.MAX_SAFE_INTEGER,
-				timeoutMs: config.proxyTimeoutMs,
-				selfPrefix: base,
-				wrapUrl: (abs) => base + catalog.sealSegment(device.accountId, abs),
-				rewriteHls: true,
-				method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
-				headers,
-				signal: c.req.raw.signal
-			});
-			res.headers.set('x-accel-buffering', 'no');
-			res.headers.set('referrer-policy', 'no-referrer');
-			return res;
-		} catch (e) {
-			if (e instanceof ProxyError) return err(c, e.status, e.code, e.message);
-			throw e;
-		}
-	};
-
-	const playRoute = async (c: Context<Env>) => {
-		const device = playDevice(c);
-		if (device instanceof Response) return device;
-		const url = catalog.resolvePlay(device.accountId, c.req.param('variant') ?? '');
-		if (!url) return err(c, 404, 'not_found', 'Unknown variant');
-		if (c.req.query('via') === 'proxy') return stream(c, device, url);
-		c.header('Cache-Control', 'no-store');
-		c.header('Referrer-Policy', 'no-referrer');
-		return c.redirect(url, 302);
-	};
-
-	const segmentRoute = async (c: Context<Env>) => {
-		const device = playDevice(c);
-		if (device instanceof Response) return device;
-		const url = catalog.openSegment(device.accountId, c.req.param('blob') ?? '');
-		if (!url) return err(c, 404, 'not_found', 'Unknown segment');
-		return stream(c, device, url);
-	};
-
-	app.get('/v1/play/:token/s/:blob', segmentRoute);
-	app.on('HEAD', '/v1/play/:token/s/:blob', segmentRoute);
-	app.get('/v1/play/:token/:variant', playRoute);
-	app.on('HEAD', '/v1/play/:token/:variant', playRoute);
 }
 
 /** POST /v1/sources/test: loads the lists without storing anything. */
@@ -350,12 +301,13 @@ async function testSource(
 ): Promise<TestResult | { ok: false; code: string; message: string; expiresAt?: number }> {
 	try {
 		if (src.type === 'xtream') {
-			const r = await loadXtream(src, catalog.limits);
+			// Counts only: the streamed items are not kept.
+			const r = await loadXtream(src, catalog.limits, () => {});
 			return {
 				ok: true,
-				movies: r.movies.length,
-				series: r.series.length,
-				channels: r.channels.length,
+				movies: r.counts.movies,
+				series: r.counts.series,
+				channels: r.counts.channels,
 				expiresAt: r.account?.expiresAt,
 				status: r.account?.status,
 				maxConnections: r.account?.maxConnections,
@@ -363,13 +315,13 @@ async function testSource(
 				warnings: r.warnings
 			};
 		}
-		const r = await loadM3U(src, catalog.limits);
+		const r = await loadM3U(src, catalog.limits, () => {});
 		const epg = epgCandidates(src, r.epgUrls)[0];
 		return {
 			ok: true,
-			movies: r.movies.length,
-			series: r.series.length,
-			channels: r.channels.length,
+			movies: r.counts.movies,
+			series: r.counts.series,
+			channels: r.counts.channels,
 			epgSuggestion: epg ? redactText(epg) : undefined,
 			warnings: r.warnings
 		};

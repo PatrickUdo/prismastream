@@ -23,8 +23,6 @@ export interface DeviceRow {
 	name: string;
 	createdAt: number;
 	lastSeenAt: number;
-	playTokenGen: number;
-	playTokenHash: string | null;
 }
 
 export interface EmailAccountRow extends AccountRow {
@@ -175,9 +173,7 @@ function toDevice(r: Row): DeviceRow {
 		accountId: String(r.account_id),
 		name: String(r.name),
 		createdAt: Number(r.created_at),
-		lastSeenAt: Number(r.last_seen_at),
-		playTokenGen: Number(r.play_token_gen ?? 0),
-		playTokenHash: r.play_token_hash == null ? null : String(r.play_token_hash)
+		lastSeenAt: Number(r.last_seen_at)
 	};
 }
 
@@ -216,15 +212,7 @@ export class Store {
 		if (!acc.has('email')) this.db.exec('ALTER TABLE accounts ADD COLUMN email TEXT');
 		if (!acc.has('auth_hash')) this.db.exec('ALTER TABLE accounts ADD COLUMN auth_hash TEXT');
 		this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_email ON accounts(email)');
-		const dev = cols('devices');
-		if (!dev.has('play_token_gen'))
-			this.db.exec('ALTER TABLE devices ADD COLUMN play_token_gen INTEGER NOT NULL DEFAULT 0');
-		if (!dev.has('play_token_hash')) {
-			this.db.exec('ALTER TABLE devices ADD COLUMN play_token_hash TEXT');
-		}
-		this.db.exec(
-			'CREATE UNIQUE INDEX IF NOT EXISTS devices_play_token ON devices(play_token_hash)'
-		);
+		// (play_token_* columns of older versions are unused since streams go device → provider.)
 	}
 
 	close() {
@@ -495,20 +483,6 @@ export class Store {
 
 	getDevice(id: string): DeviceRow | undefined {
 		const r = this.db.prepare('SELECT * FROM devices WHERE id = ?').get(id) as Row | undefined;
-		return r ? toDevice(r) : undefined;
-	}
-
-	// ---- play tokens -------------------------------------------------------------
-
-	setPlayToken(deviceId: string, gen: number, hash: string) {
-		this.db
-			.prepare('UPDATE devices SET play_token_gen = ?, play_token_hash = ? WHERE id = ?')
-			.run(gen, hash, deviceId);
-	}
-
-	deviceByPlayTokenHash(hash: string): DeviceRow | undefined {
-		const r = this.db.prepare('SELECT * FROM devices WHERE play_token_hash = ?').get(hash) as
-			Row | undefined;
 		return r ? toDevice(r) : undefined;
 	}
 

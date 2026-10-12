@@ -149,10 +149,7 @@ function rawRequest(url: URL, opts: FetchOptions, safe: string): Promise<Incomin
 			if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT')
 				return reject(new SourceError('timeout', `Time-out: ${safe}`));
 			reject(
-				new SourceError(
-					'unreachable',
-					`Server niet bereikbaar (${code || 'netwerkfout'}): ${safe}`
-				)
+				new SourceError('unreachable', `Server niet bereikbaar (${code || 'netwerkfout'}): ${safe}`)
 			);
 		});
 		req.end();
@@ -160,20 +157,24 @@ function rawRequest(url: URL, opts: FetchOptions, safe: string): Promise<Incomin
 }
 
 function statusError(status: number, safe: string): SourceError {
-	if (status === 401) return new SourceError('auth', `HTTP 401 (inloggen geweigerd): ${safe}`, { status });
+	if (status === 401)
+		return new SourceError('auth', `HTTP 401 (inloggen geweigerd): ${safe}`, { status });
 	if (status === 403)
 		return new SourceError(
 			'banned_ip',
 			`HTTP 403 (toegang geweigerd; mogelijk is het IP-adres van de server geblokkeerd): ${safe}`,
 			{ status }
 		);
-	if (status === 404) return new SourceError('http', `HTTP 404 (niet gevonden): ${safe}`, { status });
+	if (status === 404)
+		return new SourceError('http', `HTTP 404 (niet gevonden): ${safe}`, { status });
 	return new SourceError('http', `HTTP ${status}: ${safe}`, { status });
 }
 
 function retryable(e: SourceError): boolean {
 	if (e.code === 'unreachable' || e.code === 'timeout') return true;
-	return e.code === 'http' && !!e.status && (e.status >= 500 || e.status === 429 || e.status === 408);
+	return (
+		e.code === 'http' && !!e.status && (e.status >= 500 || e.status === 429 || e.status === 408)
+	);
 }
 
 function limiter(max: number, safe: string) {
@@ -183,7 +184,10 @@ function limiter(max: number, safe: string) {
 			seen += chunk.length;
 			if (seen > max)
 				return cb(
-					new SourceError('too_large', `Antwoord groter dan ${Math.round(max / 1048576)} MB: ${safe}`)
+					new SourceError(
+						'too_large',
+						`Antwoord groter dan ${Math.round(max / 1048576)} MB: ${safe}`
+					)
 				);
 			cb(null, chunk);
 		}
@@ -218,7 +222,10 @@ async function openOnce(raw: string, opts: FetchOptions): Promise<Upstream> {
 	const enc = String(res.headers['content-encoding'] ?? '').toLowerCase();
 	if (!enc && Number.isFinite(len) && len > opts.maxBytes) {
 		res.destroy();
-		throw new SourceError('too_large', `Antwoord groter dan ${Math.round(opts.maxBytes / 1048576)} MB: ${safe}`);
+		throw new SourceError(
+			'too_large',
+			`Antwoord groter dan ${Math.round(opts.maxBytes / 1048576)} MB: ${safe}`
+		);
 	}
 	res.setTimeout(opts.timeoutMs * 2, () =>
 		res.destroy(new SourceError('timeout', `Download stokt: ${safe}`))
@@ -278,7 +285,10 @@ export async function fetchText(url: string, opts: FetchOptions): Promise<string
 function jsonError(text: string, opts: FetchOptions, url: string): SourceError {
 	const safe = redactUrl(url, opts.secrets);
 	const head = redactText(text.slice(0, 80).replace(/\s+/g, ' '), opts.secrets);
-	return new SourceError('invalid_response', `Geen JSON van de server (${head || 'leeg'}): ${safe}`);
+	return new SourceError(
+		'invalid_response',
+		`Geen JSON van de server (${head || 'leeg'}): ${safe}`
+	);
 }
 
 /** GET + JSON.parse (BOM tolerant). HTML/empty bodies → invalid_response. */

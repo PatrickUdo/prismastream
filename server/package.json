@@ -9,8 +9,8 @@
 	},
 	"scripts": {
 		"dev": "node --watch src/main.ts",
-		"start": "node src/main.ts",
-		"test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+		"start": "node --expose-gc src/main.ts",
+		"test": "node --expose-gc --test --test-concurrency=1 \"test/**/*.test.ts\"",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {

@@ -34,4 +34,4 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD wget -qO- http://127.0.0.1:8787/v1/health >/dev/null || exit 1
 STOPSIGNAL SIGTERM
-CMD ["node", "src/main.ts"]
+CMD ["node", "--expose-gc", "src/main.ts"]

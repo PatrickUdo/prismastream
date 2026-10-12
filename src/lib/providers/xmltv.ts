@@ -21,6 +21,11 @@ export interface XmltvOptions {
 	channelIds?: Set<string>;
 	/** Called with the number of compressed/raw bytes consumed so far. */
 	onBytes?: (n: number) => void;
+	/**
+	 * Streaming mode: every kept programme is handed to this callback instead of being collected
+	 * (the result's `programmes` stays empty). Lets huge guides go straight to storage.
+	 */
+	onProgramme?: (p: EpgProgramme) => void;
 	signal?: AbortSignal;
 }
 
@@ -253,7 +258,8 @@ export function createXmltvCollector(opts: XmltvOptions = {}): XmltvCollector {
 			case 'programme':
 				if (prog) {
 					if (!prog.title) prog.title = '—';
-					programmes.push(prog);
+					if (opts.onProgramme) opts.onProgramme(prog);
+					else programmes.push(prog);
 				}
 				prog = null;
 				return;

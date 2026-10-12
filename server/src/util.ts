@@ -40,3 +40,8 @@ export function normalizePairingCode(input: string): string {
 export function newSalt(): string {
 	return randomBytes(16).toString('base64');
 }
+
+/** Removes every url from a log message (stream and provider urls never go into logs). */
+export function scrubUrls(text: string): string {
+	return text.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*/gi, '<url>').slice(0, 500);
+}

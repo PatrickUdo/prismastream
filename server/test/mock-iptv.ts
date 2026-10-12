@@ -17,6 +17,14 @@ export interface MockOptions {
 	/** Status for every player_api call (e.g. 403 to simulate a banned IP). */
 	apiStatus?: number;
 	expired?: boolean;
+	/** Movie list items with plot/cast/etc. (default true). Real Xtream VOD lists have none. */
+	rich?: boolean;
+	/** Channels with XMLTV programmes (default min(channels, 50)). */
+	epgChannels?: number;
+	/** Programme length in hours (default 1); 72 hours are generated. */
+	epgHours?: number;
+	/** Every 50th VOD item appears twice (another category), like real panels. */
+	duplicates?: boolean;
 }
 
 // A realistic plot length (real panels send 200-600 characters).
@@ -32,24 +40,31 @@ export interface MockIptv {
 	close(): Promise<void>;
 }
 
-function xmltv(channels: number, now: number): string {
+/** XMLTV as chunks (generated while sending, so a huge guide never sits in memory). */
+function* xmltv(channels: number, now: number, hours = 1): Generator<string> {
 	const fmt = (ms: number) => {
 		const d = new Date(ms);
 		const p = (n: number) => String(n).padStart(2, '0');
 		return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}00 +0000`;
 	};
-	let out = '<?xml version="1.0" encoding="UTF-8"?>\n<tv>\n';
+	yield '<?xml version="1.0" encoding="UTF-8"?>\n<tv>\n';
 	const start = Math.floor(now / 3600_000) * 3600_000 - 12 * 3600_000;
-	for (let c = 0; c < Math.min(channels, 50); c++) {
-		out += `<channel id="ch${c}.mock"><display-name>Mock ${c}</display-name></channel>\n`;
-		// 72 hours of hourly programmes: the window keeps -6h .. +48h.
-		for (let h = 0; h < 72; h++) {
+	for (let c = 0; c < channels; c++) {
+		let out = `<channel id="ch${c}.mock"><display-name>Mock ${c}</display-name></channel>\n`;
+		// 72 hours of programmes: the window keeps -6h .. +48h.
+		for (let h = 0; h < 72; h += hours) {
 			const s = start + h * 3600_000;
-			out += `<programme start="${fmt(s)}" stop="${fmt(s + 3600_000)}" channel="ch${c}.mock"><title>Show ${c}-${h}</title><desc>Omschrijving &amp; meer</desc></programme>\n`;
+			out += `<programme start="${fmt(s)}" stop="${fmt(s + hours * 3600_000)}" channel="ch${c}.mock"><title>Show ${c}-${h}</title><desc>Omschrijving &amp; meer</desc></programme>\n`;
 		}
+		yield out;
 	}
-	out += '<programme start="20200101000000 +0000" stop="20200101010000 +0000" channel="unknown.ch"><title>X</title></programme>\n';
-	return out + '</tv>\n';
+	yield '<programme start="20200101000000 +0000" stop="20200101010000 +0000" channel="unknown.ch"><title>X</title></programme>\n</tv>\n';
+}
+
+/** Writes chunks with backpressure. */
+async function send(res: ServerResponse, chunks: Iterable<string>) {
+	for (const c of chunks) if (!res.write(c)) await new Promise((r) => res.once('drain', r));
+	res.end();
 }
 
 export async function startMockIptv(opts: MockOptions = {}): Promise<MockIptv> {
@@ -92,7 +107,12 @@ export async function startMockIptv(opts: MockOptions = {}): Promise<MockIptv> {
 						server_info: { timezone: 'Europe/Amsterdam' }
 					});
 				case 'get_vod_categories':
-					return json(res, LANGS.map((l, i) => ({ category_id: String(i + 1), category_name: `${l} | Films` })));
+					return json(res, [
+						...LANGS.map((l, i) => ({ category_id: String(i + 1), category_name: `${l} | Films` })),
+						// Empty categories exist on real panels.
+						{ category_id: '98', category_name: 'XX | Leeg' },
+						{ category_id: '99', category_name: '' }
+					]);
 				case 'get_series_categories':
 					return json(res, [{ category_id: '20', category_name: 'NL | Series' }]);
 				case 'get_live_categories':
@@ -103,33 +123,51 @@ export async function startMockIptv(opts: MockOptions = {}): Promise<MockIptv> {
 				case 'get_vod_streams': {
 					// Streamed in chunks, like a big panel would.
 					res.writeHead(200, { 'content-type': 'application/json' });
-					res.write('[');
-					for (let i = 0; i < nMovies; i++) {
+					const rich = opts.rich !== false;
+					const item = (i: number, cat: number) => {
 						const film = Math.floor(i / 2); // two language versions per film
 						const l = lang(i);
-						res.write(
-							(i ? ',' : '') +
-								JSON.stringify({
-									num: i + 1,
-									name: `${l} - Mock Film ${film} (${2000 + (film % 24)})`,
-									stream_type: 'movie',
-									stream_id: 1000 + i,
-									stream_icon: `http://img.example/poster/${film}.jpg`,
-									rating: String(5 + (film % 5)),
-									added: String(Math.floor(now / 1000) - film * 3600),
-									category_id: String((i % LANGS.length) + 1),
-									container_extension: 'mkv',
-									genre: GENRES[film % GENRES.length],
-									plot: `Plot van film ${film}. Een avontuur met "quotes" en \\ backslashes. ${PLOT}`,
-									cast: 'Anna de Vries, Bram Jansen, Carla Bakker, Daan Visser, Eva Smit',
-									director: `Regisseur ${film % 300}`,
-									backdrop_path: [`http://img.example/backdrop/${film}.jpg`],
-									youtube_trailer: 'dQw4w9WgXcQ',
-									tmdb: ''
-								})
-						);
-					}
-					return res.end(']');
+						return JSON.stringify({
+							num: i + 1,
+							name: `${l} - Mock Film ${film} (${2000 + (film % 24)})`,
+							stream_type: 'movie',
+							stream_id: 1000 + i,
+							stream_icon: `http://img.example/poster/${film}.jpg`,
+							rating: String(5 + (film % 5)),
+							rating_5based: (5 + (film % 5)) / 2,
+							added: String(Math.floor(now / 1000) - film * 3600),
+							is_adult: '0',
+							category_id: String(cat),
+							category_ids: [cat],
+							container_extension: 'mkv',
+							custom_sid: null,
+							direct_source: '',
+							tmdb: '',
+							trailer: '',
+							genre: GENRES[film % GENRES.length],
+							...(rich
+								? {
+										plot: `Plot van film ${film}. Een avontuur met "quotes" en \\ backslashes. ${PLOT}`,
+										cast: 'Anna de Vries, Bram Jansen, Carla Bakker, Daan Visser, Eva Smit',
+										director: `Regisseur ${film % 300}`,
+										backdrop_path: [`http://img.example/backdrop/${film}.jpg`],
+										youtube_trailer: 'dQw4w9WgXcQ'
+									}
+								: {})
+						});
+					};
+					return send(
+						res,
+						(function* () {
+							yield '[';
+							for (let i = 0; i < nMovies; i++) {
+								yield (i ? ',' : '') + item(i, (i % LANGS.length) + 1);
+								if (opts.duplicates && i % 50 === 0) yield ',' + item(i, 98);
+								if (i % 500 === 499) yield ''; // chunk boundary
+							}
+							yield ']';
+						})()
+					);
 				}
 				case 'get_series':
 					return json(
@@ -139,9 +177,18 @@ export async function startMockIptv(opts: MockOptions = {}): Promise<MockIptv> {
 							name: `NL - Mock Serie ${i}`,
 							series_id: 500 + i,
 							cover: `http://img.example/series/${i}.jpg`,
-							plot: `Serie ${i}`,
+							plot: `Serie ${i}. ${PLOT}`,
+							cast: 'Anna de Vries, Bram Jansen, Carla Bakker',
+							director: `Regisseur ${i % 300}`,
 							genre: i % 2 ? 'Animation' : 'Drama',
+							releaseDate: `${2000 + (i % 24)}-05-01`,
+							rating: String(5 + (i % 5)),
+							rating_5based: (5 + (i % 5)) / 2,
+							backdrop_path: [`http://img.example/series-bd/${i}.jpg`],
+							youtube_trailer: '',
+							episode_run_time: '45',
 							category_id: '20',
+							category_ids: [20],
 							last_modified: String(Math.floor(now / 1000) - i * 7200)
 						}))
 					);
@@ -183,13 +230,13 @@ export async function startMockIptv(opts: MockOptions = {}): Promise<MockIptv> {
 				res.writeHead(401);
 				return res.end();
 			}
-			const body = Buffer.from(xmltv(nChannels, now));
+			const chunks = xmltv(opts.epgChannels ?? Math.min(nChannels, 50), now, opts.epgHours ?? 1);
 			if (opts.gzipEpg) {
 				res.writeHead(200, { 'content-type': 'application/octet-stream' });
-				return res.end(gzipSync(body));
+				return res.end(gzipSync(Buffer.from([...chunks].join(''))));
 			}
 			res.writeHead(200, { 'content-type': 'application/xml' });
-			return res.end(body);
+			return void send(res, chunks);
 		}
 		if (p === '/get.php' || p === '/playlist.m3u') {
 			if (u.searchParams.get('password') !== PASS) {

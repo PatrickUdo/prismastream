@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS cat_state (
 	built_at INTEGER NOT NULL DEFAULT 0,
 	version INTEGER NOT NULL DEFAULT 0,
 	meta TEXT,
-	error TEXT
+	gen TEXT,
+	error TEXT,
+	error_code TEXT,
+	error_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS cat_titles (
 	account_id TEXT NOT NULL,
@@ -80,7 +83,7 @@ CREATE TABLE IF NOT EXISTS cat_epg (
 	category TEXT,
 	icon TEXT
 );
-CREATE INDEX IF NOT EXISTS cat_epg_idx ON cat_epg(account_id, epg_id, start);
+CREATE UNIQUE INDEX IF NOT EXISTS cat_epg_uni ON cat_epg(account_id, epg_id, start);
 CREATE TABLE IF NOT EXISTS cat_series (
 	account_id TEXT NOT NULL,
 	source_id TEXT NOT NULL,
@@ -95,7 +98,7 @@ CREATE TABLE IF NOT EXISTS tmdb_keys (key TEXT PRIMARY KEY, tmdb_id INTEGER NOT 
 `;
 
 /** Bump when the catalog schema changes: the cache tables are dropped and rebuilt. */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 4;
 const CACHE_TABLES = [
 	'cat_state',
 	'cat_titles',
@@ -110,15 +113,24 @@ export function openCatalogDb(path: string): DatabaseSync {
 	if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
 	const db = new DatabaseSync(path);
 	db.exec('PRAGMA busy_timeout = 15000');
-	const v = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+	const v = Number(
+		(db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+	);
 	if (v !== SCHEMA_VERSION) {
 		db.exec('BEGIN IMMEDIATE');
-		const again = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+		const again = Number(
+			(db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+		);
 		if (again !== SCHEMA_VERSION) {
 			for (const t of CACHE_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`);
 			db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 		}
 		db.exec('COMMIT');
+		// Free pages of deleted generations go back to the file system (see compact()).
+		if (Number((db.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum) !== 2) {
+			db.exec('PRAGMA auto_vacuum = INCREMENTAL');
+			db.exec('VACUUM');
+		}
 	}
 	db.exec(SCHEMA);
 	return db;
@@ -144,6 +156,15 @@ export function tx<T>(db: DatabaseSync, fn: () => T): T {
 	}
 }
 
+/** Returns free pages to the file system (after an old generation was deleted). */
+export function compact(db: DatabaseSync) {
+	try {
+		db.exec('PRAGMA incremental_vacuum');
+	} catch {
+		// busy: next build
+	}
+}
+
 /** Moves the WAL into the database and truncates it (after a big write). */
 export function checkpoint(db: DatabaseSync) {
 	try {
@@ -153,11 +174,43 @@ export function checkpoint(db: DatabaseSync) {
 	}
 }
 
+/**
+ * Rows of a catalog generation live under `<accountId>@<gen>` in account_id, so a build can
+ * write a complete new generation while readers keep using the active one.
+ */
+export function genKey(accountId: string, gen: string | null | undefined): string {
+	return `${accountId}@${gen ?? '-'}`;
+}
+
+const GEN_TABLES = ['cat_titles', 'cat_details', 'cat_variants', 'cat_channels', 'cat_epg'];
+
+/**
+ * Deletes generation rows of an account: one generation (`gen`), or every generation except
+ * `keep` (leftovers of interrupted builds).
+ */
+export function deleteGeneration(
+	db: DatabaseSync,
+	accountId: string,
+	gen?: string,
+	keep?: string
+) {
+	for (const t of GEN_TABLES) {
+		if (gen) db.prepare(`DELETE FROM ${t} WHERE account_id = ?`).run(genKey(accountId, gen));
+		else
+			db.prepare(`DELETE FROM ${t} WHERE account_id GLOB ? AND account_id != ?`).run(
+				`${accountId}@*`,
+				genKey(accountId, keep ?? null)
+			);
+	}
+}
+
 /** Removes every catalog row of an account (account deleted). */
 export function purgeAccount(db: DatabaseSync, accountId: string) {
 	tx(db, () => {
-		for (const t of CACHE_TABLES)
-			db.prepare(`DELETE FROM ${t} WHERE account_id = ?`).run(accountId);
+		for (const t of GEN_TABLES)
+			db.prepare(`DELETE FROM ${t} WHERE account_id GLOB ?`).run(`${accountId}@*`);
+		db.prepare('DELETE FROM cat_state WHERE account_id = ?').run(accountId);
+		db.prepare('DELETE FROM cat_series WHERE account_id = ?').run(accountId);
 	});
 }
 

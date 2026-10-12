@@ -1,16 +1,20 @@
-// Raw data per source: DATA_DIR/cache/<accountId>/<sourceId>/{catalog,epg}.ndjson.gz.
-// Gzip-compressed JSON, one JSON value per line (header first), so writing and reading stream
-// item by item instead of building one huge string. Stream urls inside are MASKED (credential
-// placeholders), so the cache files contain no IPTV passwords.
-import { createReadStream, createWriteStream, existsSync } from 'node:fs';
-import { mkdir, rename, rm, stat } from 'node:fs/promises';
+// Raw data per source, in DATA_DIR/cache/<accountId>/<sourceId>/:
+//   items.ndjson.gz   one `["m"|"s"|"c", item]` per line (movies, series, channels)
+//   meta.json         { v, savedAt, epgUrls, account, warnings, counts } (written last = commit)
+//   epg.ndjson.gz     header line, then one EpgProgramme per line
+// Everything streams: a download is written item by item while it arrives, and a build reads
+// only the kind it is merging. Nothing holds a whole provider list as one string. Stream urls
+// are MASKED (credential placeholders), so these files contain no IPTV passwords.
+import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { once } from 'node:events';
-import { createGunzip, createGzip } from 'node:zlib';
-import type { EpgProgramme, RawChannel, RawMovie, RawSeries } from './core.ts';
+import { createGunzip, createGzip, type Gzip } from 'node:zlib';
+import type { WriteStream } from 'node:fs';
 
 const SAFE = /^[A-Za-z0-9_-]{1,80}$/;
+export const CACHE_VERSION = 2;
 
 export function sourceDir(dataDir: string, accountId: string, sourceId: string): string {
 	if (!SAFE.test(accountId) || !SAFE.test(sourceId)) throw new Error('unsafe cache path');
@@ -22,120 +26,145 @@ export function accountCacheDir(dataDir: string, accountId: string): string {
 	return join(dataDir, 'cache', accountId);
 }
 
-export interface CatalogHeader {
-	v: 1;
+export type ItemKind = 'm' | 's' | 'c';
+
+export interface CatalogMetaFile {
+	v: number;
 	savedAt: number;
 	/** EPG urls announced by an M3U header (masked). */
 	epgUrls: string[];
 	account?: Record<string, unknown>;
 	warnings: string[];
+	counts: { movies: number; series: number; channels: number };
 }
 
-export interface CachedCatalog extends CatalogHeader {
-	movies: RawMovie[];
-	series: RawSeries[];
-	channels: RawChannel[];
-}
+/** Streaming gzip NDJSON writer to a temp file; `commit()` renames it into place. */
+export class NdjsonWriter {
+	#path: string;
+	#tmp: string;
+	#gz: Gzip;
+	#out: WriteStream;
+	#batch = '';
+	#failed: Error | undefined;
 
-async function writeLines(path: string, lines: Iterable<unknown>) {
-	await mkdir(join(path, '..'), { recursive: true });
-	const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-	const gz = createGzip({ level: 6 });
-	const out = createWriteStream(tmp);
-	gz.pipe(out);
-	let batch = '';
-	for (const v of lines) {
-		batch += JSON.stringify(v) + '\n';
-		if (batch.length > 1 << 16) {
-			if (!gz.write(batch)) await once(gz, 'drain');
-			batch = '';
+	private constructor(path: string) {
+		this.#path = path;
+		this.#tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+		this.#gz = createGzip({ level: 5 });
+		this.#out = createWriteStream(this.#tmp);
+		this.#gz.on('error', (e) => (this.#failed = e));
+		this.#out.on('error', (e) => (this.#failed = e));
+		this.#gz.pipe(this.#out);
+	}
+
+	static create(path: string): NdjsonWriter {
+		mkdirSync(join(path, '..'), { recursive: true });
+		return new NdjsonWriter(path);
+	}
+
+	/** Synchronous append (buffered; gzip keeps up with any network download). */
+	write(value: unknown) {
+		this.#batch += JSON.stringify(value) + '\n';
+		if (this.#batch.length > 1 << 16) {
+			this.#gz.write(this.#batch);
+			this.#batch = '';
 		}
 	}
-	if (batch) gz.write(batch);
-	gz.end();
-	await once(out, 'close');
-	await rename(tmp, path);
+
+	/** Append and wait when the gzip buffer is full (for fast local producers). */
+	async writeAsync(value: unknown) {
+		this.#batch += JSON.stringify(value) + '\n';
+		if (this.#batch.length > 1 << 16) {
+			const ok = this.#gz.write(this.#batch);
+			this.#batch = '';
+			if (!ok) await once(this.#gz, 'drain');
+		}
+	}
+
+	async commit() {
+		if (this.#batch) this.#gz.write(this.#batch);
+		this.#batch = '';
+		this.#gz.end();
+		await once(this.#out, 'close');
+		if (this.#failed) {
+			await rm(this.#tmp, { force: true });
+			throw this.#failed;
+		}
+		await rename(this.#tmp, this.#path);
+	}
+
+	async abort() {
+		this.#gz.destroy();
+		this.#out.destroy();
+		await rm(this.#tmp, { force: true });
+	}
 }
 
 async function* readLines(path: string): AsyncGenerator<unknown> {
-	const rl = createInterface({ input: createReadStream(path).pipe(createGunzip()), crlfDelay: Infinity });
+	const rl = createInterface({
+		input: createReadStream(path).pipe(createGunzip()),
+		crlfDelay: Infinity
+	});
 	for await (const line of rl) if (line) yield JSON.parse(line);
 }
 
-export async function writeCatalogCache(dir: string, cat: CachedCatalog) {
-	const { movies, series, channels, ...header } = cat;
-	await writeLines(
-		join(dir, 'catalog.ndjson.gz'),
-		(function* () {
-			yield header;
-			for (const m of movies) yield ['m', m];
-			for (const s of series) yield ['s', s];
-			for (const c of channels) yield ['c', c];
-		})()
-	);
+export function itemsPath(dir: string) {
+	return join(dir, 'items.ndjson.gz');
 }
 
-export async function readCatalogCache(dir: string): Promise<CachedCatalog | undefined> {
-	const path = join(dir, 'catalog.ndjson.gz');
-	if (!existsSync(path)) return undefined;
+export async function readMeta(dir: string): Promise<CatalogMetaFile | undefined> {
 	try {
-		let header: CatalogHeader | undefined;
-		const movies: RawMovie[] = [];
-		const series: RawSeries[] = [];
-		const channels: RawChannel[] = [];
-		for await (const v of readLines(path)) {
-			if (!header) {
-				header = v as CatalogHeader;
-				continue;
-			}
-			const [k, item] = v as [string, unknown];
-			if (k === 'm') movies.push(item as RawMovie);
-			else if (k === 's') series.push(item as RawSeries);
-			else if (k === 'c') channels.push(item as RawChannel);
-		}
-		if (!header || header.v !== 1) return undefined;
-		return { ...header, movies, series, channels };
-	} catch {
-		return undefined; // corrupt cache: refetch
-	}
-}
-
-export async function cacheAge(dir: string, file: 'catalog' | 'epg'): Promise<number | undefined> {
-	try {
-		const s = await stat(join(dir, `${file}.ndjson.gz`));
-		return Date.now() - s.mtimeMs;
+		const m = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8')) as CatalogMetaFile;
+		if (m.v !== CACHE_VERSION || !existsSync(itemsPath(dir))) return undefined;
+		return m;
 	} catch {
 		return undefined;
 	}
 }
 
-export async function writeEpgCache(dir: string, programmes: EpgProgramme[]) {
-	await writeLines(
-		join(dir, 'epg.ndjson.gz'),
-		(function* () {
-			yield { v: 1, savedAt: Date.now() };
-			for (const p of programmes) yield p;
-		})()
-	);
+export async function writeMeta(dir: string, meta: CatalogMetaFile) {
+	const tmp = join(dir, `meta.json.${process.pid}.tmp`);
+	await writeFile(tmp, JSON.stringify(meta));
+	await rename(tmp, join(dir, 'meta.json'));
 }
 
-export async function readEpgCache(dir: string, after: number): Promise<EpgProgramme[] | undefined> {
-	const path = join(dir, 'epg.ndjson.gz');
-	if (!existsSync(path)) return undefined;
+/** Streams the cached items of the given kinds. */
+export async function* readItems<T = unknown>(
+	dir: string,
+	kinds: ItemKind[]
+): AsyncGenerator<T> {
+	const want = new Set(kinds);
+	for await (const v of readLines(itemsPath(dir))) {
+		const [k, item] = v as [ItemKind, T];
+		if (want.has(k)) yield item;
+	}
+}
+
+export async function epgAge(dir: string): Promise<number | undefined> {
 	try {
-		const out: EpgProgramme[] = [];
-		let first = true;
-		for await (const v of readLines(path)) {
-			if (first) {
-				first = false;
-				continue;
-			}
-			const p = v as EpgProgramme;
-			if (p.stop > after) out.push(p);
-		}
-		return out;
+		return Date.now() - (await stat(join(dir, 'epg.ndjson.gz'))).mtimeMs;
 	} catch {
 		return undefined;
+	}
+}
+
+export function epgPath(dir: string) {
+	return join(dir, 'epg.ndjson.gz');
+}
+
+/** Streams cached programmes that end after `after`. */
+export async function* readEpg<T extends { stop: number }>(
+	dir: string,
+	after: number
+): AsyncGenerator<T> {
+	if (!existsSync(epgPath(dir))) return;
+	let first = true;
+	for await (const v of readLines(epgPath(dir))) {
+		if (first) {
+			first = false;
+			continue;
+		}
+		if ((v as T).stop > after) yield v as T;
 	}
 }
 

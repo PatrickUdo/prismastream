@@ -251,12 +251,13 @@ describe('catalog build and API', () => {
 		const d = await get(`/v1/catalog/titles/${encodeURIComponent(movie.id)}`, a.token);
 		assert.equal(d.variants.length, 2, 'both language versions are variants');
 		for (const v of d.variants) {
-			assert.match(v.url, /^http:\/\/sync\.test\/v1\/play\/pt_[A-Za-z0-9_-]{43}\/[A-Za-z0-9_-]+\.mkv$/);
+			// Direct upstream url, credentials filled in for this account (device streams itself).
+			assert.ok(v.url.startsWith(`${mock.url}/movie/${USER}/${PASS}/`), v.url);
+			assert.match(v.url, /\.mkv$/);
 			assert.equal(v.upstreamHttp, true);
 		}
 		assert.ok(Array.isArray(d.similar));
-		assert.ok(!JSON.stringify(d).includes(PASS));
-		assert.ok(!JSON.stringify(d).includes(USER), 'no username in play urls either');
+		assert.ok(!JSON.stringify(d.similar).includes(PASS), 'cards never contain stream urls');
 
 		// Lazy series: episodes are loaded server-side on first detail request and cached.
 		const series = await get('/v1/catalog/titles?kind=series&limit=1', a.token);
@@ -264,7 +265,7 @@ describe('catalog build and API', () => {
 		const sd = await get(`/v1/catalog/titles/${encodeURIComponent(series.items[0].id)}`, a.token);
 		assert.equal(sd.seasons.length, 2);
 		assert.equal(sd.seasons[0].episodes.length, 3);
-		assert.match(sd.seasons[0].episodes[0].variants[0].url, /\/v1\/play\/pt_/);
+		assert.ok(sd.seasons[0].episodes[0].variants[0].url.startsWith(`${mock.url}/series/${USER}/${PASS}/`));
 		assert.ok(sd.cast.length >= 2, 'series info fills metadata');
 		await get(`/v1/catalog/titles/${encodeURIComponent(series.items[0].id)}`, a.token);
 		assert.equal(mock.requests.filter((r) => r.includes('get_series_info')).length, before + 1);
@@ -306,7 +307,8 @@ describe('catalog build and API', () => {
 		assert.ok(meta.counts.programmes > 0, 'EPG from the url-tvg header (gzip) loaded');
 		const ch = await get('/v1/catalog/channels', a.token);
 		assert.equal(ch.items.length, 4);
-		assert.match(ch.items[0].variants[0].url, /\/v1\/play\/pt_.+\.ts$/);
+		assert.ok(ch.items[0].variants[0].url.startsWith(`${gz.url}/live/${USER}/${PASS}/`));
+		assert.match(ch.items[0].variants[0].url, /\.ts$/);
 	});
 
 	it('paginates with cursors, sorts and filters', async () => {
@@ -495,7 +497,7 @@ describe('catalog build and API', () => {
 		const { a } = await withXtream();
 		const db = ctx!.catalog!.db;
 		const n = () =>
-			Number((db.prepare('SELECT COUNT(*) AS n FROM cat_titles WHERE account_id = ?').get(a.accountId) as Json).n);
+			Number((db.prepare('SELECT COUNT(*) AS n FROM cat_titles WHERE account_id GLOB ?').get(`${a.accountId}@*`) as Json).n);
 		assert.ok(n() > 0);
 		assert.equal((await ctx!.call('/v1/account', { method: 'DELETE', token: a.token })).status, 204);
 		assert.equal(n(), 0);
@@ -503,8 +505,101 @@ describe('catalog build and API', () => {
 	});
 });
 
-describe('play urls', () => {
-	it('302 to the real url, never logging credentials; tokens are per device and revocable', async () => {
+describe('robust, memory-lean builds', () => {
+	it('a failed build reports status error and keeps the previous catalog', async () => {
+		const { a } = await withXtream();
+		const before = await get('/v1/catalog/titles?limit=500', a.token);
+		assert.ok(before.total > 0);
+		// Too little heap for the build worker: it runs out of memory.
+		ctx!.catalog!.config.buildMemoryMb = 4;
+		ctx!.catalog!.refresh(a.accountId, { force: true });
+		await ctx!.catalog!.queue.idle();
+		const meta = await get('/v1/catalog/meta', a.token);
+		assert.equal(meta.status, 'error');
+		assert.equal(meta.errorCode, 'too_large');
+		assert.match(meta.error, /te groot/);
+		assert.equal(meta.counts.movies, 15, 'counts of the previous catalog');
+		const after = await get('/v1/catalog/titles?limit=500', a.token);
+		assert.deepEqual(after, before, 'the previous catalog stays available');
+		const db = ctx!.catalog!.db;
+		const keys = db
+			.prepare('SELECT DISTINCT account_id FROM cat_titles WHERE account_id GLOB ?')
+			.all(`${a.accountId}@*`) as Json[];
+		assert.equal(keys.length, 1, 'no staging rows left behind');
+		// The next good build clears the error.
+		ctx!.catalog!.config.buildMemoryMb = 256;
+		ctx!.catalog!.refresh(a.accountId);
+		await ctx!.catalog!.queue.idle();
+		const ok = await get('/v1/catalog/meta', a.token);
+		assert.equal(ok.status, 'ready');
+		assert.equal(ok.error, undefined);
+	});
+
+	it('merging in small batches gives the same titles as one big merge', async () => {
+		const { runBuild } = await import('../src/catalog/build.ts');
+		const { openCatalogDb, genKey } = await import('../src/catalog/db.ts');
+		const { mkdtempSync, rmSync } = await import('node:fs');
+		const { tmpdir } = await import('node:os');
+		const dir = mkdtempSync(join(tmpdir(), 'ps-batch-'));
+		const snapshot = async (batchItems: number) => {
+			const db = openCatalogDb(join(dir, `c${batchItems}.db`));
+			await runBuild(
+				{
+					accountId: 'a_x',
+					dataDir: dir,
+					catalogDbPath: '',
+					sources: [{ id: 'sample', type: 'sample', name: 'Demo', enabled: true, updatedAt: 0 }],
+					force: [],
+					preferLang: 'nl',
+					limits: {} as never,
+					ttl: { catalogMs: 1, epgMs: 1, seriesMs: 1 },
+					batchItems
+				},
+				() => {},
+				db
+			);
+			const gen = (db.prepare('SELECT gen FROM cat_state').get() as Json).gen;
+			const rows = db
+				.prepare('SELECT id, card FROM cat_titles WHERE account_id = ? ORDER BY id')
+				.all(genKey('a_x', gen)) as Json[];
+			const variants = db
+				.prepare('SELECT COUNT(*) AS n FROM cat_variants WHERE account_id = ?')
+				.get(genKey('a_x', gen)) as Json;
+			db.close();
+			return { rows: rows.map((r) => [r.id, JSON.parse(r.card).languages.join(',')]), variants: variants.n };
+		};
+		const one = await snapshot(1_000_000);
+		const small = await snapshot(20);
+		rmSync(dir, { recursive: true, force: true });
+		assert.ok(one.rows.length > 50);
+		assert.deepEqual(small.rows, one.rows);
+		assert.equal(small.variants, one.variants);
+	});
+
+	it('realistic Xtream data: duplicates, empty categories and one huge category', async () => {
+		const dup = await startMockIptv({ movies: 400, series: 20, channels: 10, duplicates: true, rich: false });
+		try {
+			ctx = setup({ proxyAllowPrivate: true, demoSource: false });
+			const a = await newAccount(ctx.call);
+			await ctx.call('/v1/sources', {
+				method: 'POST',
+				token: a.token,
+				json: { type: 'xtream', serverUrl: dup.url, username: USER, password: PASS }
+			});
+			await ctx.catalog!.queue.idle();
+			const meta = await get('/v1/catalog/meta', a.token);
+			assert.equal(meta.status, 'ready');
+			assert.equal(meta.counts.movies, 200, 'duplicate list entries do not create titles');
+			const src = ((await get('/v1/sources', a.token)) as unknown as Json[])[0];
+			assert.equal(src.stats.movies, 400, 'duplicate stream ids are stored once');
+		} finally {
+			await dup.close();
+		}
+	});
+});
+
+describe('stream urls: the server is never in the video path', () => {
+	it('detail and channels carry direct urls with no-store; lists never contain stream urls', async () => {
 		const logs: string[] = [];
 		const orig = { log: console.log, warn: console.warn, error: console.error };
 		const capture = (...args: unknown[]) => logs.push(args.map(String).join(' '));
@@ -512,67 +607,77 @@ describe('play urls', () => {
 		try {
 			const { a } = await withXtream({ log: true });
 			const movies = await get('/v1/catalog/titles?kind=movie&limit=1', a.token);
-			const d = await get(`/v1/catalog/titles/${encodeURIComponent(movies.items[0].id)}`, a.token);
-			const playPath = new URL(d.variants[0].url).pathname;
-			const r = await ctx!.call(playPath, { redirect: 'manual' });
-			assert.equal(r.status, 302);
-			const loc = r.headers.get('location')!;
-			assert.ok(loc.startsWith(`${mock.url}/movie/${USER}/${PASS}/`));
-			assert.equal(r.headers.get('cache-control'), 'no-store');
+			const id = movies.items[0].id;
+			const r = await ctx!.call(`/v1/catalog/titles/${encodeURIComponent(id)}?kids=0`, { token: a.token });
+			assert.equal(r.status, 200);
+			assert.equal(r.headers.get('cache-control'), 'private, no-store');
+			assert.equal(r.headers.get('etag'), null, 'no ETag on responses with stream urls');
+			const d = (await r.json()) as Json;
+			const v = d.variants[0];
+			assert.ok(v.url.startsWith(`${mock.url}/movie/${USER}/${PASS}/`));
+			assert.equal(v.upstreamHttp, true);
+			// The url really plays (the device fetches it directly; here: the mock).
+			const direct = await fetch(v.url, { headers: { range: 'bytes=0-9' } });
+			assert.equal(direct.status, 206);
+			await direct.arrayBuffer();
+			// If-None-Match never produces a 304 here.
+			const again = await ctx!.call(`/v1/catalog/titles/${encodeURIComponent(id)}`, {
+				token: a.token,
+				headers: { 'if-none-match': '*' }
+			});
+			assert.equal(again.status, 200);
 
-			// Live: the .ts fallback is an alt url.
-			const ch = await get('/v1/catalog/channels', a.token);
-			const v = ch.items[0].variants[0];
-			assert.match(v.url, /\.m3u8$/);
-			assert.equal(v.altUrls.length, 1);
-			const alt = await ctx!.call(new URL(v.altUrls[0]).pathname, { redirect: 'manual' });
-			assert.match(alt.headers.get('location')!, /\.ts$/);
+			// Live: url and the .ts alt url, both direct.
+			const chRes = await ctx!.call('/v1/catalog/channels', { token: a.token });
+			assert.equal(chRes.headers.get('cache-control'), 'private, no-store');
+			assert.equal(chRes.headers.get('etag'), null);
+			const ch = (await chRes.json()) as Json;
+			const lv = ch.items[0].variants[0];
+			assert.ok(lv.url.startsWith(`${mock.url}/live/${USER}/${PASS}/`) && lv.url.endsWith('.m3u8'));
+			assert.equal(lv.altUrls.length, 1);
+			assert.ok(lv.altUrls[0].endsWith('.ts') && lv.altUrls[0].includes(PASS));
 
-			// via=proxy: HLS is rewritten so segments and keys go through /v1/play (no credentials).
-			const hls = await ctx!.call(new URL(v.url).pathname + '?via=proxy');
-			assert.equal(hls.status, 200);
-			assert.equal(hls.headers.get('x-accel-buffering'), 'no');
-			const playlist = await hls.text();
-			assert.ok(!playlist.includes(PASS) && !playlist.includes(USER), 'no credentials in the playlist');
-			const segs = playlist.split('\n').filter((l) => l.startsWith('http'));
-			assert.equal(segs.length, 2);
-			assert.ok(segs.every((s) => s.includes('/v1/play/pt_') && s.includes('/s/')));
-			assert.match(playlist, /URI="http:\/\/sync\.test\/v1\/play\/pt_[^"]+\/s\/[^"]+"/);
-			const seg = await ctx!.call(new URL(segs[0]).pathname);
-			assert.equal(seg.status, 200);
-			assert.equal((await seg.arrayBuffer()).byteLength, 4096);
+			// Another account cannot get these urls.
+			const b = await newAccount(ctx!.call);
+			assert.equal((await ctx!.call(`/v1/catalog/titles/${encodeURIComponent(id)}`, { token: b.token })).status, 404);
+			const other = (await get('/v1/catalog/channels', b.token)) as Json;
+			assert.ok(!JSON.stringify(other).includes(PASS));
 
-			// via=proxy for VOD: Range requests pass through.
-			const ranged = await ctx!.call(playPath + '?via=proxy', { headers: { range: 'bytes=100-199' } });
-			assert.equal(ranged.status, 206);
-			assert.equal(ranged.headers.get('content-range'), 'bytes 100-199/4096');
-			assert.equal((await ranged.arrayBuffer()).byteLength, 100);
+			// Lists (titles, home, search, recommend) never contain stream urls or credentials.
+			for (const path of ['/v1/catalog/titles?limit=200', '/v1/catalog/home', '/v1/catalog/search?q=mock', '/v1/catalog/meta']) {
+				const body = JSON.stringify(await get(path, a.token));
+				assert.ok(!body.includes(PASS) && !body.includes('/movie/') && !body.includes('/live/'), path);
+			}
 
-			// A tampered segment or unknown variant → 404; a wrong token → 401.
-			const tokenPart = playPath.split('/')[3];
-			assert.equal((await ctx!.call(`/v1/play/${tokenPart}/s/AAAA`)).status, 404);
-			assert.equal((await ctx!.call(`/v1/play/${tokenPart}/bm9wZQ`)).status, 404);
-			assert.equal((await ctx!.call(`/v1/play/pt_${'x'.repeat(43)}/bm9wZQ`)).status, 401);
-			// The API token is not a play token.
-			assert.equal((await ctx!.call(`/v1/play/${a.token}/bm9wZQ`)).status, 401);
-
-			// Rotating the token revokes the old play urls.
-			const rot = await ctx!.call('/v1/play-token', { method: 'POST', token: a.token });
-			const { playToken, prefix } = (await rot.json()) as Json;
-			assert.notEqual(playToken, tokenPart);
-			assert.equal(prefix, `http://sync.test/v1/play/${playToken}/`);
-			assert.equal((await ctx!.call(playPath, { redirect: 'manual' })).status, 401);
-			const fresh = await ctx!.call(playPath.replace(tokenPart, playToken), { redirect: 'manual' });
-			assert.equal(fresh.status, 302);
-			const cur = (await get('/v1/play-token', a.token)) as Json;
-			assert.equal(cur.playToken, playToken);
+			// No play, play-token or proxy routes (the proxy is off by default).
+			for (const path of [
+				'/v1/play/pt_x/abc',
+				'/v1/play/pt_x/s/abc',
+				'/v1/play-token',
+				'/v1/proxy/ppx_abcdefghijklmnopqrstuvwx?url=http%3A%2F%2Fexample.com'
+			])
+				assert.equal((await ctx!.call(path, { token: a.token })).status, 404, path);
+			assert.equal((await ctx!.call('/v1/proxy-token', { method: 'POST', token: a.token })).status, 404);
+			assert.equal((await ctx!.call('/v1/play-token', { method: 'POST', token: a.token })).status, 404);
 		} finally {
 			Object.assign(console, orig);
 		}
 		const all = logs.join('\n');
-		assert.ok(all.includes('/v1/play/***'), 'play requests are logged redacted');
-		assert.ok(!all.includes(PASS), 'no password in logs');
-		assert.ok(!all.includes('pt_'), 'no play token in logs');
+		assert.ok(all.includes('GET /v1/catalog/titles/:id 200'), 'detail route logged as its pattern');
+		assert.ok(!all.includes('?kids'), 'no query strings in logs');
+		assert.ok(!/https?:\/\//.test(all), 'no urls at all in logs');
+		assert.ok(!all.includes(PASS) && !all.includes(USER));
+	});
+
+	it('errors are logged without urls', async () => {
+		const { scrubUrls } = await import('../src/util.ts');
+		assert.equal(
+			scrubUrls(`fetch failed: http://h:8080/live/${USER}/${PASS}/1.ts and https://x.example/a?b=c`),
+			'fetch failed: <url> and <url>'
+		);
+		const { redactPath } = await import('../src/app.ts');
+		assert.equal(redactPath('/v1/catalog/titles/tmdb-m-603?kids=1'), '/v1/catalog/titles/:id');
+		assert.equal(redactPath('/v1/catalog/titles'), '/v1/catalog/titles');
 	});
 });
 

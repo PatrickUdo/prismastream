@@ -17,11 +17,6 @@ export interface ProxyOptions {
 	method: 'GET' | 'HEAD';
 	headers: Record<string, string | undefined>;
 	signal?: AbortSignal;
-	/**
-	 * Custom url wrapper for HLS rewriting (overrides selfPrefix). The play route uses it to
-	 * hide upstream urls (which may contain credentials) inside sealed tokens.
-	 */
-	wrapUrl?: (absoluteUrl: string) => string;
 }
 
 export class ProxyError extends Error {
@@ -34,7 +29,14 @@ export class ProxyError extends Error {
 	}
 }
 
-const FORWARD_REQ = ['range', 'if-range', 'if-none-match', 'if-modified-since', 'accept', 'user-agent'];
+const FORWARD_REQ = [
+	'range',
+	'if-range',
+	'if-none-match',
+	'if-modified-since',
+	'accept',
+	'user-agent'
+];
 const FORWARD_RES = [
 	'content-type',
 	'content-length',
@@ -81,7 +83,9 @@ function doRequest(url: URL, opts: ProxyOptions): Promise<IncomingMessage> {
 			timeout: opts.timeoutMs,
 			signal: opts.signal
 		});
-		req.on('timeout', () => req.destroy(new ProxyError(504, 'upstream_timeout', 'Upstream timeout')));
+		req.on('timeout', () =>
+			req.destroy(new ProxyError(504, 'upstream_timeout', 'Upstream timeout'))
+		);
 		req.on('response', resolve);
 		req.on('error', (err) => {
 			if (err instanceof ProxyError) return reject(err);
@@ -97,18 +101,14 @@ function doRequest(url: URL, opts: ProxyOptions): Promise<IncomingMessage> {
 
 function isHlsCandidate(res: IncomingMessage, url: URL): boolean {
 	const ct = String(res.headers['content-type'] ?? '').toLowerCase();
-	if (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity') return false;
+	if (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity')
+		return false;
 	if (ct.includes('mpegurl')) return true;
 	return /\.m3u8$/i.test(url.pathname) && !ct.startsWith('video/');
 }
 
 /** Rewrites every URI in an HLS playlist to an absolute url that goes through the proxy. */
-export function rewritePlaylist(
-	text: string,
-	base: URL,
-	selfPrefix: string,
-	wrapUrl?: (absoluteUrl: string) => string
-): string {
+export function rewritePlaylist(text: string, base: URL, selfPrefix: string): string {
 	const wrap = (ref: string) => {
 		let abs: string;
 		try {
@@ -116,7 +116,6 @@ export function rewritePlaylist(
 		} catch {
 			return ref;
 		}
-		if (wrapUrl) return wrapUrl(abs);
 		if (abs.startsWith(selfPrefix.split('?')[0])) return abs;
 		return selfPrefix + encodeURIComponent(abs);
 	};
@@ -202,7 +201,7 @@ export async function proxyFetch(target: URL, opts: ProxyOptions): Promise<Respo
 		if (ended) {
 			const text = head.toString('utf8');
 			if (text.trimStart().startsWith('#EXTM3U') && text.includes('#EXT-X-')) {
-				const body = rewritePlaylist(text, url, opts.selfPrefix, opts.wrapUrl);
+				const body = rewritePlaylist(text, url, opts.selfPrefix);
 				headers.delete('content-length');
 				headers.set('content-type', 'application/vnd.apple.mpegurl');
 				headers.set('cache-control', 'no-store');

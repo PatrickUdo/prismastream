@@ -15,6 +15,7 @@ import { parseTarget, ProxyError, proxyFetch } from './proxy.ts';
 import { RateLimiter } from './ratelimit.ts';
 import { InviteUnavailableError, Store, type DeviceRow, type DocRow, type Kdf } from './store.ts';
 import {
+	scrubUrls,
 	newPairingCode,
 	newProxyToken,
 	newSalt,
@@ -64,13 +65,16 @@ function deviceName(v: unknown): string {
 	return (s || 'Apparaat').slice(0, 64);
 }
 
-/** Path for logs with secrets removed (proxy/play tokens, play targets, query string). */
+/**
+ * Path for logs: no query string, no tokens or codes, and the detail route only as its pattern
+ * (`/v1/catalog/titles/:id`).
+ */
 export function redactPath(path: string): string {
 	return path
-		.replace(/^\/v1\/proxy\/[^/?]+/, '/v1/proxy/***')
-		.replace(/^\/v1\/play\/[^?]*/, '/v1/play/***')
-		.replace(/^\/v1\/auth\/device-code\/[^/?]+/, '/v1/auth/device-code/***')
-		.replace(/\?.*$/, '');
+		.replace(/\?.*$/, '')
+		.replace(/^\/v1\/proxy\/[^/]+/, '/v1/proxy/***')
+		.replace(/^\/v1\/catalog\/titles\/[^/]+$/, '/v1/catalog/titles/:id')
+		.replace(/^\/v1\/auth\/device-code\/[^/]+/, '/v1/auth/device-code/***');
 }
 
 export function createApp(config: Config, store = new Store(config.dbPath)): AppContext {
@@ -160,7 +164,7 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		await next();
 		c.header('X-Content-Type-Options', 'nosniff');
 		c.header('Referrer-Policy', 'no-referrer');
-		const streaming = c.req.path.startsWith('/v1/proxy/') || c.req.path.startsWith('/v1/play/');
+		const streaming = c.req.path.startsWith('/v1/proxy/');
 		if (!streaming && !c.res.headers.get('cache-control')) c.header('Cache-Control', 'no-store');
 	});
 
@@ -176,8 +180,7 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 	app.use('/v1/*', async (c, next) => {
 		if (
 			c.req.method === 'OPTIONS' ||
-			c.req.path.startsWith('/v1/proxy/') ||
-			c.req.path.startsWith('/v1/play/')
+			c.req.path.startsWith('/v1/proxy/')
 		)
 			return next();
 		const retry = limiter.hit('ip:' + clientIp(c), config.rateLimitPerMin, 60_000);
@@ -414,58 +417,63 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		return c.json({ cursor: Math.max(next, since), changed: next > since });
 	});
 
-	// ---- proxy -----------------------------------------------------------------
+	// ---- proxy (legacy, off by default) ------------------------------------------
+	// The server must never be in the path of video streams. This generic CORS proxy only exists
+	// for the local-mode web build fetching playlists/APIs; with PROXY_ENABLED=false (the default)
+	// its routes are not registered at all (404).
 
-	app.post('/v1/proxy-token', auth, (c) => {
-		if (!config.proxyEnabled) return err(c, 403, 'proxy_disabled', 'Proxy is disabled');
-		const d = c.get('device');
-		const proxyToken = newProxyToken();
-		store.setProxyTokenHash(d.id, sha256hex(proxyToken));
-		return c.json({ proxyToken, prefix: `${publicBase(c)}/v1/proxy/${proxyToken}?url=` }, 201);
-	});
+	if (config.proxyEnabled) {
+		app.post('/v1/proxy-token', auth, (c) => {
+			if (!config.proxyEnabled) return err(c, 403, 'proxy_disabled', 'Proxy is disabled');
+			const d = c.get('device');
+			const proxyToken = newProxyToken();
+			store.setProxyTokenHash(d.id, sha256hex(proxyToken));
+			return c.json({ proxyToken, prefix: `${publicBase(c)}/v1/proxy/${proxyToken}?url=` }, 201);
+		});
 
-	const proxyRoute = async (c: Context<Env>) => {
-		if (!config.proxyEnabled) return err(c, 403, 'proxy_disabled', 'Proxy is disabled');
-		const ip = clientIp(c);
-		const blocked = limiter.blocked('authfail:' + ip, AUTH_FAIL_LIMIT);
-		if (blocked) return tooMany(c, blocked);
-		const token = c.req.param('token') ?? '';
-		const device = /^ppx_[A-Za-z0-9_-]{20,64}$/.test(token)
-			? store.deviceByProxyTokenHash(sha256hex(token))
-			: undefined;
-		if (!device) {
-			limiter.hit('authfail:' + ip, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW);
-			return err(c, 401, 'unauthorized', 'Invalid proxy token');
-		}
-		const retry = limiter.hit('proxy:' + device.id, config.proxyRateLimitPerMin, 60_000);
-		if (retry) return tooMany(c, retry);
-		try {
-			const target = parseTarget(c.req.query('url'), config.proxyAllowPrivate);
-			const headers: Record<string, string | undefined> = {};
-			for (const [k, v] of c.req.raw.headers) headers[k.toLowerCase()] = v;
-			const res = await proxyFetch(target, {
-				allowPrivate: config.proxyAllowPrivate,
-				maxBytes: config.proxyMaxBytes,
-				timeoutMs: config.proxyTimeoutMs,
-				selfPrefix: `${publicBase(c)}/v1/proxy/${token}?url=`,
-				rewriteHls: c.req.query('raw') !== '1',
-				method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
-				headers,
-				signal: c.req.raw.signal
-			});
-			return res;
-		} catch (e) {
-			if (e instanceof ProxyError) return err(c, e.status, e.code, e.message);
-			throw e;
-		}
-	};
-	app.get('/v1/proxy/:token', proxyRoute);
-	app.on('HEAD', '/v1/proxy/:token', proxyRoute);
-	app.on(['POST', 'PUT', 'DELETE', 'PATCH'], '/v1/proxy/:token', (c) =>
-		err(c, 405, 'method_not_allowed', 'Only GET and HEAD are allowed')
-	);
+		const proxyRoute = async (c: Context<Env>) => {
+			if (!config.proxyEnabled) return err(c, 403, 'proxy_disabled', 'Proxy is disabled');
+			const ip = clientIp(c);
+			const blocked = limiter.blocked('authfail:' + ip, AUTH_FAIL_LIMIT);
+			if (blocked) return tooMany(c, blocked);
+			const token = c.req.param('token') ?? '';
+			const device = /^ppx_[A-Za-z0-9_-]{20,64}$/.test(token)
+				? store.deviceByProxyTokenHash(sha256hex(token))
+				: undefined;
+			if (!device) {
+				limiter.hit('authfail:' + ip, AUTH_FAIL_LIMIT, AUTH_FAIL_WINDOW);
+				return err(c, 401, 'unauthorized', 'Invalid proxy token');
+			}
+			const retry = limiter.hit('proxy:' + device.id, config.proxyRateLimitPerMin, 60_000);
+			if (retry) return tooMany(c, retry);
+			try {
+				const target = parseTarget(c.req.query('url'), config.proxyAllowPrivate);
+				const headers: Record<string, string | undefined> = {};
+				for (const [k, v] of c.req.raw.headers) headers[k.toLowerCase()] = v;
+				const res = await proxyFetch(target, {
+					allowPrivate: config.proxyAllowPrivate,
+					maxBytes: config.proxyMaxBytes,
+					timeoutMs: config.proxyTimeoutMs,
+					selfPrefix: `${publicBase(c)}/v1/proxy/${token}?url=`,
+					rewriteHls: c.req.query('raw') !== '1',
+					method: c.req.method === 'HEAD' ? 'HEAD' : 'GET',
+					headers,
+					signal: c.req.raw.signal
+				});
+				return res;
+			} catch (e) {
+				if (e instanceof ProxyError) return err(c, e.status, e.code, e.message);
+				throw e;
+			}
+		};
+		app.get('/v1/proxy/:token', proxyRoute);
+		app.on('HEAD', '/v1/proxy/:token', proxyRoute);
+		app.on(['POST', 'PUT', 'DELETE', 'PATCH'], '/v1/proxy/:token', (c) =>
+			err(c, 405, 'method_not_allowed', 'Only GET and HEAD are allowed')
+		);
+	}
 
-	// ---- catalog, sources, play urls ----------------------------------------------
+	// ---- catalog and sources -------------------------------------------------------
 
 	if (catalog)
 		registerCatalogRoutes(app, {
@@ -473,13 +481,9 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 			catalog,
 			limiter,
 			auth,
-			clientIp,
-			publicBase,
 			readJson,
 			err,
-			tooMany,
-			authFailLimit: AUTH_FAIL_LIMIT,
-			authFailWindow: AUTH_FAIL_WINDOW
+			tooMany
 		});
 
 	// ---- errors ----------------------------------------------------------------
@@ -490,7 +494,7 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 			'[error]',
 			c.req.method,
 			redactPath(c.req.path),
-			redactText((e as Error).message)
+			scrubUrls(redactText((e as Error).message))
 		);
 		return err(c, 500, 'internal', 'Internal server error');
 	});

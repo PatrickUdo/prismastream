@@ -4,8 +4,9 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { runBuild, type BuildEvent, type BuildJob } from './build.ts';
 
 const job = workerData as BuildJob;
-const post = (e: BuildEvent | { type: 'done' } | { type: 'error'; message: string; code?: string }) =>
-	parentPort!.postMessage(e);
+const post = (
+	e: BuildEvent | { type: 'done' } | { type: 'error'; message: string; code?: string }
+) => parentPort!.postMessage(e);
 
 runBuild(job, post)
 	.then(() => post({ type: 'done' }))

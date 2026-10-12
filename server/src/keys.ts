@@ -1,25 +1,15 @@
 // Server key handling. One 32-byte master key (SERVER_KEY or SERVER_KEY_FILE, base64) is
 // expanded with HKDF into independent subkeys:
 //   secrets    AES-256-GCM for stored IPTV credentials (AAD binds account + source)
-//   play       HMAC for deterministic per-device play tokens (pt_…)
-//   segment    AES-256-GCM for upstream urls embedded in rewritten HLS playlists
 //   prelogin   HMAC for fake salts of unknown e-mail addresses (no account enumeration)
 // Production refuses to start without a key; development generates one in DATA_DIR.
-import {
-	createCipheriv,
-	createDecipheriv,
-	createHmac,
-	hkdfSync,
-	randomBytes
-} from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config } from './config.ts';
 
 export interface ServerKeys {
 	secrets: Buffer;
-	play: Buffer;
-	segment: Buffer;
 	prelogin: Buffer;
 }
 
@@ -61,8 +51,6 @@ export function deriveKeys(master: Buffer): ServerKeys {
 		Buffer.from(hkdfSync('sha256', master, 'prismastream-server', info, 32));
 	return {
 		secrets: sub('source-secrets-v1'),
-		play: sub('play-token-v1'),
-		segment: sub('segment-url-v1'),
 		prelogin: sub('prelogin-salt-v1')
 	};
 }

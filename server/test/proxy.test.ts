@@ -54,7 +54,7 @@ describe('SSRF address classification', () => {
 
 describe('proxy', () => {
 	it('requires a valid proxy token (API tokens do not work)', async () => {
-		ctx = setup();
+		ctx = setup({ proxyEnabled: true });
 		const a = await newAccount(ctx.call);
 		const url = encodeURIComponent('http://example.com/');
 		assert.equal((await ctx!.call(`/v1/proxy/ppx_${'z'.repeat(32)}?url=${url}`)).status, 401);
@@ -62,7 +62,7 @@ describe('proxy', () => {
 	});
 
 	it('only allows GET/HEAD and http(s)', async () => {
-		ctx = setup();
+		ctx = setup({ proxyEnabled: true });
 		const { proxyToken: t } = await proxyToken(ctx!);
 		assert.equal((await ctx!.call(`/v1/proxy/${t}?url=x`, { method: 'POST' })).status, 405);
 		for (const bad of ['file:///etc/passwd', 'ftp://example.com/a', 'gopher://x', 'not a url'])
@@ -75,7 +75,7 @@ describe('proxy', () => {
 	});
 
 	it('blocks loopback, private and metadata targets (literal and via DNS)', async () => {
-		ctx = setup();
+		ctx = setup({ proxyEnabled: true });
 		const { proxyToken: t } = await proxyToken(ctx!);
 		for (const target of [
 			'http://127.0.0.1:8787/v1/health',
@@ -146,7 +146,7 @@ describe('proxy', () => {
 		after(() => upstream.close());
 
 		it('streams the body and forwards Range', async () => {
-			ctx = setup({ proxyAllowPrivate: true });
+			ctx = setup({ proxyEnabled: true, proxyAllowPrivate: true });
 			const { proxyToken: t } = await proxyToken(ctx!);
 			const res = await ctx!.call(`/v1/proxy/${t}?url=${encodeURIComponent(base + '/file.bin')}`, {
 				headers: { origin: 'http://localhost:5173' }
@@ -163,21 +163,21 @@ describe('proxy', () => {
 		});
 
 		it('follows redirects but re-validates the target', async () => {
-			ctx = setup({ proxyAllowPrivate: true });
+			ctx = setup({ proxyEnabled: true, proxyAllowPrivate: true });
 			const { proxyToken: t } = await proxyToken(ctx!);
 			const ok = await ctx!.call(`/v1/proxy/${t}?url=${encodeURIComponent(base + '/redirect-ok')}`);
 			assert.equal(await ok.text(), '0123456789');
 		});
 
 		it('blocks a private upstream when private access is off', async () => {
-			ctx = setup({ proxyAllowPrivate: false });
+			ctx = setup({ proxyEnabled: true, proxyAllowPrivate: false });
 			const { proxyToken: t } = await proxyToken(ctx!);
 			const res = await ctx!.call(`/v1/proxy/${t}?url=${encodeURIComponent(base + '/redirect')}`);
 			assert.equal(res.status, 403);
 		});
 
 		it('rewrites HLS playlists so segments go through the proxy', async () => {
-			ctx = setup({ proxyAllowPrivate: true });
+			ctx = setup({ proxyEnabled: true, proxyAllowPrivate: true });
 			const { proxyToken: t, prefix } = await proxyToken(ctx!);
 			assert.equal(prefix, `http://sync.test/v1/proxy/${t}?url=`);
 			const res = await ctx!.call(`/v1/proxy/${t}?url=${encodeURIComponent(base + '/master.m3u8')}`);
@@ -193,14 +193,14 @@ describe('proxy', () => {
 		});
 
 		it('does not rewrite IPTV channel lists (no #EXT-X- tags)', async () => {
-			ctx = setup({ proxyAllowPrivate: true });
+			ctx = setup({ proxyEnabled: true, proxyAllowPrivate: true });
 			const { proxyToken: t } = await proxyToken(ctx!);
 			const res = await ctx!.call(`/v1/proxy/${t}?url=${encodeURIComponent(base + '/channels.m3u')}`);
 			assert.ok((await res.text()).includes('\nhttp://iptv.example/live/1.ts\n'));
 		});
 
 		it('enforces the maximum response size', async () => {
-			ctx = setup({ proxyAllowPrivate: true, proxyMaxBytes: 5000 });
+			ctx = setup({ proxyEnabled: true, proxyAllowPrivate: true, proxyMaxBytes: 5000 });
 			const { proxyToken: t } = await proxyToken(ctx!);
 			const declared = await ctx!.call(
 				`/v1/proxy/${t}?url=${encodeURIComponent(base + '/big-declared')}`
