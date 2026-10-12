@@ -95,5 +95,7 @@ Eigendom: `src/lib/merge/`, `src/lib/sample/`, `src/lib/tmdb/`, `src/lib/stores/
 - ✅ Deploy-bestanden: deploy/web.Dockerfile (nginx-SPA, lokaal getest), deploy/compose.yaml, deploy/deploy.sh
 - ⬜ DNS-records in Cloudflare (gebruiker) en proxy hosts in Nginx Proxy Manager (gebruiker)
 - ⬜ Deploy naar vps.prisma-scripts.com en end-to-end-test op https://prismastream.patrickudo.nl
-- ⬜ tvOS-app naar remote-modus (Agent N)
+- 🔄 Eenvoudige sync: één account met e-mail en wachtwoord (zero-knowledge), tv koppelen met een code en goedkeuring op de telefoon (L: server, M: client)
+- 🔄 Geen demobibliotheek online (DEMO_SOURCE=false op de server, VITE_DEMO=false in de productiebuild)
+- ⬜ tvOS-app naar remote-modus en tv-login met code (Agent N)
 - ⬜ Eindcontrole: code-review, regressie op horizontale scroll, build, iOS- en Android-sync

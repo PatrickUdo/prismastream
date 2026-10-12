@@ -21,6 +21,7 @@ services:
       CORS_ORIGINS: https://prismastream.patrickudo.nl
       TRUST_PROXY: "true"
       ALLOW_SIGNUP: "false"
+      DEMO_SOURCE: "false"
       NODE_OPTIONS: --max-old-space-size=512
     volumes:
       - ./data:/data

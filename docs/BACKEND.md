@@ -79,3 +79,32 @@ type TitleCard = Pick<Title, 'id'|'kind'|'title'|'originalTitle'|'year'|'genres'
   - lokaal staat alleen een LRU-cache van TitleCards en details (max. ±300 items of 5 MB in IndexedDB) plus de laatste home-respons;
   - geen ruwe catalogi en geen IPTV-gegevens op het apparaat.
 - **Bronnenbeheer:** in remote-modus gaat dat via `/v1/sources`. De gegevens gaan via TLS naar de server en worden lokaal niet bewaard.
+
+## Accounts en synchronisatie: eenvoudig (besluit gebruiker, vervangt de wachtwoordzin- en koppelcode-flow als hoofdroute)
+
+De gebruiker wil dat synchroniseren "gewoon" werkt via deze app en deze server: **één account met e-mail en wachtwoord**. Je logt op elk apparaat in en alles synchroniseert. Er is geen losse sync-server-url of wachtwoordzin; de backend-url zit vast in de build.
+
+**Zero-knowledge-login** (zoals Bitwarden en 1Password):
+- De client vraagt `POST /v1/auth/prelogin { email }` op en krijgt `{ salt, iterations }`. Voor onbekende e-mails komt er een deterministische nep-salt terug (HMAC van de e-mail met een serversleutel), zodat niet te zien is welke accounts bestaan.
+- `masterKey = PBKDF2-SHA256(wachtwoord, salt, ≥ 600.000)`. Daaruit volgen via HKDF `authKey` (32 bytes) en de E2E-sleutels (`encKey` en `macKey`, zoals nu in src/lib/sync/crypto.ts).
+- De client stuurt alleen `authKey` (base64) mee. De server bewaart `scrypt(authKey, serverSalt)` en ziet dus nooit het wachtwoord of de E2E-sleutel.
+
+**Endpoints:**
+- `POST /v1/auth/register { email, authKey, salt, iterations, signupCode, deviceName }` geeft `{ accountId, token, deviceId }`. Alleen met een geldige `SIGNUP_CODE` (uitnodigingscode).
+- `POST /v1/auth/login { email, authKey, deviceName }` geeft `{ accountId, token, deviceId }`. Er zit een rate-limit en lockout per e-mail en per IP op. De fout is altijd generiek: "e-mail of wachtwoord onjuist".
+- `POST /v1/auth/logout` trekt het token van dit apparaat in. De bestaande `/v1/devices`-endpoints blijven voor het apparatenoverzicht en het afmelden van een apparaat.
+- `POST /v1/auth/password { oldAuthKey, newAuthKey, newSalt, newIterations }`: wachtwoord wijzigen. De client versleutelt eerst alle E2E-docs opnieuw met de nieuwe sleutel.
+
+**Tv-login** (Apple TV, Android TV, en alles zonder fijn toetsenbord), apparaat-flow met overdracht van de E2E-sleutel:
+1. De tv maakt een ECDH P-256-sleutelpaar en roept `POST /v1/auth/device-code { publicKey, deviceName }` aan. Hij krijgt `{ userCode: 'ABCD-1234', deviceCode, verifyUrl: 'https://prismastream.patrickudo.nl/activate', expiresIn: 600, interval: 3 }`.
+2. De tv toont de code (plus een QR-code van `verifyUrl?code=…`). De gebruiker opent die url op een ingelogd apparaat, of kiest in de app "Tv koppelen", en voert de code in.
+3. Het ingelogde apparaat haalt `GET /v1/auth/device-code/:userCode` op (geeft `{ deviceName, publicKey }`), versleutelt de E2E-`masterKey` met ECDH (eigen ephemeral key) + HKDF + AES-GCM naar de publieke sleutel van de tv, en stuurt `POST /v1/auth/device-code/:userCode/approve { sealedKey, ephemeralPublicKey }`.
+4. De tv pollt `POST /v1/auth/device-token { deviceCode }` en krijgt na goedkeuring `{ accountId, token, deviceId, sealedKey, ephemeralPublicKey }`. Daarna ontsleutelt hij de masterKey lokaal. De server ziet de sleutel nooit onversleuteld.
+
+**Migratie:** bestaande sync-accounts (wachtwoordzin-flow) blijven werken. Het is prima als `/v1/accounts` en `pairing` alleen nog intern of als legacy bestaan.
+
+## Demo-bibliotheek: niet online
+
+- **Server:** in productie (`DEMO_SOURCE=false`, standaard in de productie-compose) krijgt een account géén `sample`-bron. `GET /v1/sources` toont hem niet, en de catalogus bevat alleen echte bronnen.
+- **Productie-web-app** (`VITE_DEMO=false`): geen demobron in lokale modus en geen demodata in de bundel (tree-shaken waar mogelijk). Zonder bronnen staat er een nette lege staat met "Voeg je IPTV-bron toe" (Xtream of M3U).
+- **Ontwikkeling en tests:** de demo blijft beschikbaar (`DEMO_SOURCE=true` en `VITE_DEMO=true`, de standaard in dev).

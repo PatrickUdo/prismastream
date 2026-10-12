@@ -7,6 +7,8 @@ RUN npm ci --ignore-scripts
 COPY . .
 ARG VITE_BACKEND_URL=https://backend.prismastream.patrickudo.nl
 ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
+ARG VITE_DEMO=false
+ENV VITE_DEMO=$VITE_DEMO
 RUN npx svelte-kit sync && npx vite build
 
 FROM nginx:1.29-alpine

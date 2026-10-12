@@ -24,7 +24,7 @@ for svc in $SERVICES; do
 	case $svc in
 	web)
 		docker build --platform linux/amd64 -f "$CTX/deploy/web.Dockerfile" \
-			--build-arg VITE_BACKEND_URL=$BACKEND_URL -t prismastream-web:latest -t prismastream-web:$REV "$CTX"
+			--build-arg VITE_BACKEND_URL=$BACKEND_URL --build-arg VITE_DEMO=false -t prismastream-web:latest -t prismastream-web:$REV "$CTX"
 		IMAGES+=(prismastream-web:latest prismastream-web:$REV) ;;
 	backend)
 		docker build --platform linux/amd64 -f "$CTX/server/Dockerfile" \
