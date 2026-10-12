@@ -90,11 +90,12 @@ Eigendom: `src/lib/merge/`, `src/lib/sample/`, `src/lib/tmdb/`, `src/lib/stores/
 
 - ✅ Keuze gebruiker: de server haalt bronnen op (inloggegevens versleuteld op de server), persoonlijke data blijft E2E; contract in docs/BACKEND.md
 - ✅ Code op GitHub (PatrickUdo/prismastream)
-- 🔄 Agent L: server-side bronnen, catalogus-build en cache (SQLite en gzip), catalog-API, play-redirects, signup met uitnodigingscode, Docker
+- ✅ Agent L: server-side bronnen, catalogus-build en cache (SQLite en gzip), catalog-API, play-redirects, signup met uitnodigingscode, Docker
 - 🔄 Agent M: web-client remote-modus (kleine LRU-cache, paginering), onboarding, bronnen via de server, opslagbeheer, Android-fout en E2E-robuustheid
 - ✅ Deploy-bestanden: deploy/web.Dockerfile (nginx-SPA, lokaal getest), deploy/compose.yaml, deploy/deploy.sh
-- ⬜ DNS-records in Cloudflare (gebruiker) en proxy hosts in Nginx Proxy Manager (gebruiker)
-- ⬜ Deploy naar vps.prisma-scripts.com en end-to-end-test op https://prismastream.patrickudo.nl
+- ✅ DNS-records in Cloudflare, proxy hosts met Let's Encrypt en Force SSL in Nginx Proxy Manager
+- ✅ Backend live op https://backend.prismastream.patrickudo.nl (4ea0a55; 39 MB RAM in rust)
+- ⬜ Web-app met remote-modus deployen (na Agent M) en end-to-end-test op https://prismastream.patrickudo.nl
 - 🔄 Eenvoudige sync: één account met e-mail en wachtwoord (zero-knowledge), tv koppelen met een code en goedkeuring op de telefoon (L: server, M: client)
 - 🔄 Geen demobibliotheek online (DEMO_SOURCE=false op de server, VITE_DEMO=false in de productiebuild)
 - ⬜ tvOS-app naar remote-modus en tv-login met code (Agent N)

@@ -37,7 +37,7 @@ done
 echo "Images naar $HOST sturen…"
 docker save "${IMAGES[@]}" | gzip -1 | ssh "$HOST" 'gunzip | docker load'
 
-ssh "$HOST" "mkdir -p $STACK/data"
+ssh "$HOST" "mkdir -p $STACK/data && chown -R 1000:1000 $STACK/data && chmod 700 $STACK/data"
 scp -q "$CTX/deploy/compose.yaml" "$HOST:$STACK/compose.yaml"
 ssh "$HOST" "set -e
 	cd $STACK
