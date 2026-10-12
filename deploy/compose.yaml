@@ -3,14 +3,14 @@
 #   prismastream.patrickudo.nl          -> prismastream-web:80
 #   backend.prismastream.patrickudo.nl  -> prismastream-backend:8787
 # Secrets live in ./.env on the server (never in git): SERVER_KEY, SIGNUP_CODE, TMDB_API_KEY.
+# Images are built on a workstation (deploy/deploy.sh) and loaded here: the VPS has no swap
+# and too little free RAM to run npm ci / vite build safely next to the other services.
 name: prismastream
 
 services:
   backend:
     container_name: prismastream-backend
-    build:
-      context: ./app
-      dockerfile: server/Dockerfile
+    image: prismastream-backend:latest
     restart: unless-stopped
     env_file: .env
     environment:
@@ -29,11 +29,7 @@ services:
 
   web:
     container_name: prismastream-web
-    build:
-      context: ./app
-      dockerfile: deploy/web.Dockerfile
-      args:
-        VITE_BACKEND_URL: https://backend.prismastream.patrickudo.nl
+    image: prismastream-web:latest
     restart: unless-stopped
     mem_limit: 64m
     networks: [proxy]
