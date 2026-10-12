@@ -1,0 +1,43 @@
+# PrismaStream stack for vps.prisma-scripts.com (/opt/stacks/prismastream, managed by Dockge).
+# Nginx Proxy Manager (network "proxy") terminates TLS:
+#   prismastream.patrickudo.nl          -> prismastream-web:80
+#   backend.prismastream.patrickudo.nl  -> prismastream-backend:8787
+# Secrets live in ./.env on the server (never in git): SERVER_KEY, SIGNUP_CODE, TMDB_API_KEY.
+name: prismastream
+
+services:
+  backend:
+    container_name: prismastream-backend
+    build:
+      context: ./app
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      DATA_DIR: /data
+      PUBLIC_URL: https://backend.prismastream.patrickudo.nl
+      CORS_ORIGINS: https://prismastream.patrickudo.nl
+      TRUST_PROXY: "true"
+      ALLOW_SIGNUP: "false"
+      NODE_OPTIONS: --max-old-space-size=512
+    volumes:
+      - ./data:/data
+    mem_limit: 768m
+    networks: [proxy]
+
+  web:
+    container_name: prismastream-web
+    build:
+      context: ./app
+      dockerfile: deploy/web.Dockerfile
+      args:
+        VITE_BACKEND_URL: https://backend.prismastream.patrickudo.nl
+    restart: unless-stopped
+    mem_limit: 64m
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true

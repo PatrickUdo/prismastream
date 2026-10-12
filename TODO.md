@@ -86,4 +86,14 @@ Eigendom: `src/lib/merge/`, `src/lib/sample/`, `src/lib/tmdb/`, `src/lib/stores/
   - ⬜ Fase C: sync met de bestaande server (E2E-crypto in Swift met CryptoKit)
   - ⬜ tvOS: profielkiezer bij het opstarten, kindermodus met pincode, Top Shelf-extensie
   - ✅ Dode demostream (Sintel, 403) vervangen door Apple bipbop (TS, multi-audio en ondertitels)
+## Ronde 4: PrismaStream Cloud (server-side catalogus en hosting)
+
+- ✅ Keuze gebruiker: de server haalt bronnen op (inloggegevens versleuteld op de server), persoonlijke data blijft E2E; contract in docs/BACKEND.md
+- ✅ Code op GitHub (PatrickUdo/prismastream)
+- 🔄 Agent L: server-side bronnen, catalogus-build en cache (SQLite en gzip), catalog-API, play-redirects, signup met uitnodigingscode, Docker
+- 🔄 Agent M: web-client remote-modus (kleine LRU-cache, paginering), onboarding, bronnen via de server, opslagbeheer, Android-fout en E2E-robuustheid
+- ✅ Deploy-bestanden: deploy/web.Dockerfile (nginx-SPA, lokaal getest), deploy/compose.yaml, deploy/deploy.sh
+- ⬜ DNS-records in Cloudflare (gebruiker) en proxy hosts in Nginx Proxy Manager (gebruiker)
+- ⬜ Deploy naar vps.prisma-scripts.com en end-to-end-test op https://prismastream.patrickudo.nl
+- ⬜ tvOS-app naar remote-modus (Agent N)
 - ⬜ Eindcontrole: code-review, regressie op horizontale scroll, build, iOS- en Android-sync
