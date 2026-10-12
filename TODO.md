@@ -97,8 +97,14 @@ Eigendom: `src/lib/merge/`, `src/lib/sample/`, `src/lib/tmdb/`, `src/lib/stores/
 - ✅ DNS-records in Cloudflare, proxy hosts met Let's Encrypt en Force SSL in Nginx Proxy Manager
 - ✅ Backend live op https://backend.prismastream.patrickudo.nl (4ea0a55; 39 MB RAM in rust)
 - ✅ Web-app met remote-modus live (e0ec1fd), geen demo online
-- 🔄 Verplicht inloggen: welkomstscherm (/welcome) en login-gate in productie, ook in de native apps (Agent M)
-- 🔄 Eenmalige uitnodigingscodes en een admin-CLI in de container (Agent L)
+- ✅ Verplicht inloggen: welkomstscherm (/welcome) en login-gate, live (6bfa9c0)
+- ✅ Eenmalige uitnodigingscodes en een admin-CLI in de container (727d485)
+- ✅ Fix: onterechte offline-melding (navigator.onLine, geblokkeerde IndexedDB), live
+- ✅ App: afspelen alleen op het apparaat, geen stream-urls in de cache (live)
+- 🔄 Server: geen play-route of proxy meer, directe urls met no-store (klaar, deploy samen met de geheugenfix)
+- 🔄 Geheugenzuinige catalogus-build voor 300.000 items (Agent L); tijdelijk CATALOG_BUILD_MEMORY_MB=560
+- ⬜ Welkomstscherm: prisma-lijnen niet over de ondertitel
+- ⬜ App-links in APP_LINKS invullen zodra de apps in de stores staan
 - ⬜ End-to-end-test op productie na de login-gate
 - ✅ Eenvoudige sync: één account met e-mail en wachtwoord (zero-knowledge), tv koppelen met een code en goedkeuring op de telefoon (L: server, M: client)
 - ✅ Geen demobibliotheek online (DEMO_SOURCE=false op de server, VITE_DEMO=false in de productiebuild)
