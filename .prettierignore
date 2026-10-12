@@ -1,0 +1,19 @@
+# Package Managers
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+bun.lock
+bun.lockb
+
+# Miscellaneous
+/static/
+
+# Capacitor native projects
+/android/
+/ios/
+/server/
+/brag-output*/
+
+# Native Apple TV app (Swift) and the generated core bundle
+/tvos/
+/.impeccable/

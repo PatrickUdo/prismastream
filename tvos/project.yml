@@ -1,0 +1,91 @@
+name: PrismaStream
+options:
+  bundleIdPrefix: nl.tuwi.prismastream
+  deploymentTarget:
+    tvOS: "17.0"
+  developmentLanguage: nl
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+    LOCALIZATION_PREFERS_STRING_CATALOGS: NO
+targets:
+  PrismaStreamTV:
+    type: application
+    platform: tvOS
+    sources:
+      - path: PrismaStream
+        excludes:
+          - "**/.DS_Store"
+    resources: []
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: nl.tuwi.prismastream.tv
+        PRODUCT_NAME: PrismaStream
+        INFOPLIST_FILE: PrismaStream/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "3"
+        SUPPORTED_PLATFORMS: "appletvos appletvsimulator"
+    info:
+      path: PrismaStream/Info.plist
+      properties:
+        CFBundleDisplayName: PrismaStream
+        CFBundleDevelopmentRegion: nl
+        CFBundleLocalizations: [nl, en]
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UIRequiredDeviceCapabilities: [arm64]
+        UIUserInterfaceStyle: Dark
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIAppSupportsHDR: true
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsArbitraryLoadsForMedia: true
+  PrismaStreamTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources: [PrismaStreamTests]
+    dependencies:
+      - target: PrismaStreamTV
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: nl.tuwi.prismastream.tv.tests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PrismaStream.app/PrismaStream"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+  PrismaStreamUITests:
+    type: bundle.ui-testing
+    platform: tvOS
+    sources: [PrismaStreamUITests]
+    dependencies:
+      - target: PrismaStreamTV
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: nl.tuwi.prismastream.tv.uitests
+        TEST_TARGET_NAME: PrismaStreamTV
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  PrismaStreamTV:
+    build:
+      targets:
+        PrismaStreamTV: all
+        PrismaStreamTests: [test]
+        PrismaStreamUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - PrismaStreamTests
+        - PrismaStreamUITests

@@ -1,0 +1,8 @@
+# Xcode / XcodeGen output
+DerivedData/
+build/
+*.xcodeproj/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcresult
+.DS_Store

@@ -1,0 +1,147 @@
+export default {
+	nl: {
+		'live.title': 'Live TV',
+		'live.channels': 'Zenders',
+		'live.channelCount.one': '1 zender',
+		'live.channelCount.other': '{n} zenders',
+		'live.refreshing': 'Zenders bijwerken…',
+		'live.errorTitle': 'Zenders konden niet worden geladen',
+		'live.emptyTitle': 'Nog geen zenders',
+		'live.emptyBody':
+			'Voeg een IPTV-bron toe (Xtream Codes of een M3U-playlist) om live tv en de programmagids te zien.',
+		'live.addSource': 'Bron toevoegen',
+
+		// hero
+		'live.heroLast': 'Laatst bekeken',
+		'live.heroFeatured': 'Nu live',
+		'live.watchLive': 'Kijk live',
+		'live.watchChannel': 'Zender kijken',
+		'live.watchChannelNamed': '{name} kijken',
+		'live.later': 'Straks',
+		'live.progressLabel': 'Voortgang, nog {min} min',
+		'live.minutesLeft': 'Nog {min} min',
+
+		// filters
+		'live.all': 'Alle',
+		'live.favorites': 'Favorieten',
+		'live.searchLabel': 'Zoek een zender of programma',
+		'live.searchPlaceholder': 'Zoek zender of programma',
+		'live.clearSearch': 'Zoekopdracht wissen',
+		'live.languageLabel': 'Taal',
+		'live.allLanguages': 'Alle talen',
+		'live.viewLabel': 'Weergave',
+		'live.viewList': 'Lijst',
+		'live.viewGuide': 'Gids',
+		'live.categoriesLabel': 'Categorieën',
+		'live.resetFilters': 'Filters wissen',
+		'live.noResults': 'Geen zenders gevonden',
+		'live.noResultsBody': 'Probeer een andere zoekterm, taal of categorie.',
+		'live.noFavorites': 'Nog geen favoriete zenders',
+		'live.noFavoritesBody': 'Tik op de ster bij een zender om hem hier te bewaren.',
+		'live.laterInGuide': 'Straks in de gids',
+
+		// channel row
+		'live.now': 'Nu',
+		'live.next': 'Hierna',
+		'live.nowOn': 'nu: {title}',
+		'live.noInfo': 'Geen programma-informatie',
+		'live.noInfoBody': 'Voor deze zender is geen programmagids beschikbaar.',
+		'live.lastWatched': 'laatst bekeken',
+		'live.favorite': 'Aan favorieten toevoegen',
+		'live.unfavorite': 'Uit favorieten verwijderen',
+		'live.detailsFor': 'Details van {name}',
+		'live.sources.one': '1 bron',
+		'live.sources.other': '{n} bronnen',
+		'live.versions.one': '1 versie',
+		'live.versions.other': '{n} versies',
+
+		// detail / sources
+		'live.onNow': 'Nu live',
+		'live.upcoming': 'Straks',
+		'live.aired': 'Uitgezonden',
+		'live.chooseSource': 'Bron kiezen',
+		'live.chooseSourceFor': 'Bron kiezen voor {name}',
+		'live.chooseSourceHint':
+			'Deze zender is beschikbaar in meerdere versies. Kies taal, kwaliteit en bron.',
+		'live.langUnknown': 'Taal onbekend',
+		'live.qualityAuto': 'Auto',
+
+		// guide
+		'live.guideLabel': 'Programmagids',
+		'live.guideHelp':
+			'Gebruik de pijltjestoetsen: omhoog en omlaag voor zenders, links en rechts voor programma’s. Enter opent details.',
+		'live.prevDay': 'Vorige dag',
+		'live.nextDay': 'Volgende dag',
+		'live.jumpNow': 'Nu'
+	},
+	en: {
+		'live.title': 'Live TV',
+		'live.channels': 'Channels',
+		'live.channelCount.one': '1 channel',
+		'live.channelCount.other': '{n} channels',
+		'live.refreshing': 'Updating channels…',
+		'live.errorTitle': 'Channels could not be loaded',
+		'live.emptyTitle': 'No channels yet',
+		'live.emptyBody':
+			'Add an IPTV source (Xtream Codes or an M3U playlist) to watch live TV and browse the guide.',
+		'live.addSource': 'Add source',
+
+		'live.heroLast': 'Last watched',
+		'live.heroFeatured': 'Live now',
+		'live.watchLive': 'Watch live',
+		'live.watchChannel': 'Watch channel',
+		'live.watchChannelNamed': 'Watch {name}',
+		'live.later': 'Later',
+		'live.progressLabel': 'Progress, {min} min left',
+		'live.minutesLeft': '{min} min left',
+
+		'live.all': 'All',
+		'live.favorites': 'Favourites',
+		'live.searchLabel': 'Search a channel or programme',
+		'live.searchPlaceholder': 'Search channel or programme',
+		'live.clearSearch': 'Clear search',
+		'live.languageLabel': 'Language',
+		'live.allLanguages': 'All languages',
+		'live.viewLabel': 'View',
+		'live.viewList': 'List',
+		'live.viewGuide': 'Guide',
+		'live.categoriesLabel': 'Categories',
+		'live.resetFilters': 'Clear filters',
+		'live.noResults': 'No channels found',
+		'live.noResultsBody': 'Try another search term, language or category.',
+		'live.noFavorites': 'No favourite channels yet',
+		'live.noFavoritesBody': 'Tap the star on a channel to keep it here.',
+		'live.laterInGuide': 'Later in the guide',
+
+		'live.now': 'Now',
+		'live.next': 'Next',
+		'live.nowOn': 'now: {title}',
+		'live.noInfo': 'No programme information',
+		'live.noInfoBody': 'There is no programme guide for this channel.',
+		'live.lastWatched': 'last watched',
+		'live.favorite': 'Add to favourites',
+		'live.unfavorite': 'Remove from favourites',
+		'live.detailsFor': 'Details for {name}',
+		'live.sources.one': '1 source',
+		'live.sources.other': '{n} sources',
+		'live.versions.one': '1 version',
+		'live.versions.other': '{n} versions',
+
+		'live.onNow': 'Live now',
+		'live.upcoming': 'Later',
+		'live.aired': 'Aired',
+		'live.chooseSource': 'Choose source',
+		'live.chooseSourceFor': 'Choose source for {name}',
+		'live.chooseSourceHint':
+			'This channel is available in several versions. Pick language, quality and source.',
+		'live.langUnknown': 'Unknown language',
+		'live.qualityAuto': 'Auto',
+
+		'live.guideLabel': 'Programme guide',
+		'live.guideHelp':
+			'Use the arrow keys: up and down for channels, left and right for programmes. Enter opens details.',
+		'live.prevDay': 'Previous day',
+		'live.nextDay': 'Next day',
+		'live.jumpNow': 'Now'
+	}
+};

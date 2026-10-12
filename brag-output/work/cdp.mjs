@@ -1,0 +1,13 @@
+import puppeteer from 'puppeteer-core';
+const v = await (await fetch('http://localhost:9333/json/version')).json();
+const browser = await puppeteer.connect({ browserWSEndpoint: v.webSocketDebuggerUrl, defaultViewport: null });
+const [page] = await browser.pages();
+const errs = [];
+page.on('pageerror', (e) => errs.push('pageerror: ' + (e.stack || e.message)));
+page.on('console', (m) => { if (m.type() === 'error') errs.push('console: ' + m.text() + ' @ ' + JSON.stringify(m.stackTrace()?.slice(0,3))); });
+const target = process.argv[2] || '/';
+await page.goto('https://localhost' + target, { waitUntil: 'load' }).catch((e) => errs.push('goto: ' + e.message));
+await new Promise((r) => setTimeout(r, 6000));
+console.log('url', page.url());
+console.log(errs.join('\n') || 'no errors');
+await browser.disconnect();

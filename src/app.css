@@ -1,0 +1,403 @@
+/* PrismaStream design system: "prisma".
+   Near-black depth, subtle spectral light refraction, glass surfaces, generous type.
+   Owned by the UI agent; other modules use these variables, never raw colors. */
+@import '@fontsource-variable/manrope';
+
+:root {
+	color-scheme: dark;
+
+	/* ---- Accent (set at runtime from user.settings.accent) ---------------- */
+	--accent: #7c5cff;
+	--accent-contrast: #ffffff;
+	--accent-soft: color-mix(in oklab, var(--accent) 22%, transparent);
+	--accent-faint: color-mix(in oklab, var(--accent) 10%, transparent);
+	--accent-glow: color-mix(in oklab, var(--accent) 48%, transparent);
+	--accent-strong: color-mix(in oklab, var(--accent) 82%, white);
+
+	/* ---- Surfaces --------------------------------------------------------- */
+	--bg: #07070b;
+	--bg-elev-1: #101018;
+	--bg-elev-2: #171722;
+	--bg-elev-3: #20202e;
+	--bg-glass: rgb(14 14 22 / 0.58);
+	--bg-glass-strong: rgb(18 18 28 / 0.82);
+	--bg-hover: rgb(255 255 255 / 0.06);
+	--bg-press: rgb(255 255 255 / 0.1);
+	--glass-blur: blur(22px) saturate(150%);
+	--line: rgb(255 255 255 / 0.08);
+	--line-strong: rgb(255 255 255 / 0.16);
+
+	/* ---- Text ------------------------------------------------------------- */
+	--text: #f4f3f8;
+	--text-2: rgb(244 243 248 / 0.72);
+	--text-3: rgb(244 243 248 / 0.48);
+	--text-on-media: #ffffff;
+
+	/* ---- Status ----------------------------------------------------------- */
+	--danger: #ff5a6a;
+	--success: #3ddc97;
+	--live: #ff3b5c;
+	--rating: #ffd27a;
+
+	/* ---- Spectrum: the prisma signature. Use sparingly (hairlines, logo). -- */
+	--spectrum: linear-gradient(
+		90deg,
+		#ff6b8b 0%,
+		#ffad6b 18%,
+		#ffe58a 34%,
+		#7dffc4 52%,
+		#6bc8ff 70%,
+		#8f7bff 86%,
+		#e57bff 100%
+	);
+	--spectrum-soft: linear-gradient(
+		100deg,
+		rgb(255 107 139 / 0.16),
+		rgb(255 229 138 / 0.12) 30%,
+		rgb(125 255 196 / 0.1) 50%,
+		rgb(107 200 255 / 0.14) 70%,
+		rgb(143 123 255 / 0.18)
+	);
+
+	/* ---- Shape ------------------------------------------------------------ */
+	--radius-xs: 5px;
+	--radius-s: 8px;
+	--radius-m: 14px;
+	--radius-l: 22px;
+	--radius-xl: 30px;
+	--radius-pill: 999px;
+
+	/* ---- Elevation -------------------------------------------------------- */
+	--shadow-1: 0 1px 2px rgb(0 0 0 / 0.4), 0 2px 8px rgb(0 0 0 / 0.25);
+	--shadow-2: 0 6px 18px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.3);
+	--shadow-3: 0 24px 60px rgb(0 0 0 / 0.6), 0 8px 20px rgb(0 0 0 / 0.35);
+	--glow: 0 18px 50px -12px var(--accent-glow);
+
+	/* ---- Typography ------------------------------------------------------- */
+	--font: 'Manrope Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--text-xs: 0.75rem;
+	--text-s: 0.8125rem;
+	--text-m: 0.9375rem;
+	--text-l: 1.125rem;
+	--text-xl: clamp(1.25rem, 1.05rem + 0.6vw, 1.5rem);
+	--text-2xl: clamp(1.6rem, 1.2rem + 1.4vw, 2.4rem);
+	--text-display: clamp(2.4rem, 1.4rem + 4vw, 5.25rem);
+	--tracking-tight: -0.025em;
+	--tracking-caps: 0.14em;
+
+	/* ---- Motion ----------------------------------------------------------- */
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+	--dur-fast: 140ms;
+	--dur: 260ms;
+	--dur-slow: 520ms;
+	--dur-xslow: 1100ms;
+
+	/* ---- Layout ----------------------------------------------------------- */
+	--gutter: clamp(16px, 4vw, 56px);
+	--safe-top: env(safe-area-inset-top, 0px);
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+	--safe-left: env(safe-area-inset-left, 0px);
+	--safe-right: env(safe-area-inset-right, 0px);
+	/* Width the app shell occupies on the left (rail on desktop, 0 on mobile). */
+	--shell-left: 0px;
+	/* Space the shell occupies at the bottom (tab bar on mobile). */
+	--shell-bottom: 0px;
+	--page-start: calc(var(--shell-left) + var(--gutter) + var(--safe-left));
+	--page-end: calc(var(--gutter) + var(--safe-right));
+	--rail-w: 5rem;
+	--rail-w-open: 15.5rem;
+	--tabbar-h: 4rem;
+	--topbar-h: 3.5rem;
+	--card-w: clamp(7.25rem, 5.5rem + 7vw, 11.5rem);
+	--card-w-wide: clamp(14rem, 10rem + 14vw, 21rem);
+	--z-nav: 50;
+	--z-overlay: 80;
+	--z-modal: 100;
+
+	/* Focus ring for keyboard / TV remote navigation */
+	--focus-ring: 0 0 0 2px var(--bg), 0 0 0 4.5px var(--accent);
+
+	/* Film grain (SVG feTurbulence) as a cached tile. */
+	--grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.6 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+@media (min-width: 800px) {
+	:root {
+		--shell-left: var(--rail-w);
+	}
+}
+
+@media (max-width: 799.98px) {
+	:root {
+		--shell-bottom: calc(var(--tabbar-h) + var(--safe-bottom));
+	}
+}
+
+/* 10-foot UI: scale everything up on large screens / TV. */
+@media (min-width: 1800px) {
+	html {
+		font-size: 125%;
+	}
+	:root {
+		--gutter: 4rem;
+	}
+}
+
+/* ---- Remote control (data-input="remote", set by #lib/tv/mode.svelte.ts) ----
+   Arrow keys / OK were used last: a bigger, glowing focus ring (cards also scale up more,
+   see the card components) and room around focused elements when scrolling. */
+html[data-input='remote'] {
+	--focus-ring: 0 0 0 2.5px var(--bg), 0 0 0 6px var(--accent), 0 0 30px 4px var(--accent-glow);
+}
+html[data-input='remote'] :focus {
+	scroll-margin-block: 12vh;
+}
+/* Programmatic focus (after a page change) does not always count as :focus-visible. */
+html[data-input='remote'] :focus:not(:focus-visible, main, [tabindex='-1']:not([data-focusable])) {
+	outline: none;
+	box-shadow: var(--focus-ring);
+}
+
+/* ---- Smart TV (data-device="tv"): 10-foot UI ---------------------------------------
+   Detected from the user agent, Android TV (leanback, no touch) or ?tv=1. Everything is
+   scaled with the screen, content stays inside a 5% overscan-safe area, the rail is always
+   visible and expensive effects (backdrop blur, blend modes, big shadows) are off. */
+html[data-device='tv'] {
+	font-size: clamp(16px, 1.25vw, 30px);
+	--safe-top: max(env(safe-area-inset-top, 0px), 5vh);
+	--safe-bottom: max(env(safe-area-inset-bottom, 0px), 5vh);
+	--safe-left: max(env(safe-area-inset-left, 0px), 5vw);
+	--safe-right: max(env(safe-area-inset-right, 0px), 5vw);
+	--gutter: 1.75rem;
+	--shell-left: var(--rail-w);
+	--shell-bottom: 0px;
+	/* Solid, semi-transparent surfaces instead of frosted glass. */
+	--glass-blur: none;
+	--bg-glass: rgb(16 16 24 / 0.9);
+	--bg-glass-strong: rgb(18 18 28 / 0.96);
+	--shadow-2: 0 4px 12px rgb(0 0 0 / 0.45);
+	--shadow-3: 0 10px 26px rgb(0 0 0 / 0.5);
+	--glow: 0 0 0 0 transparent;
+}
+html[data-device='tv'] *,
+html[data-device='tv'] *::before,
+html[data-device='tv'] *::after,
+html[data-device='tv'] dialog::backdrop {
+	backdrop-filter: none !important;
+	-webkit-backdrop-filter: none !important;
+}
+html[data-device='tv'] body {
+	/* A fixed background repaints the whole screen on every scroll step. */
+	background-attachment: scroll;
+}
+html[data-device='tv'] .grain::after {
+	display: none;
+}
+html[data-device='tv'] .page {
+	padding-top: calc(var(--safe-top) + 2rem);
+	padding-bottom: calc(var(--safe-bottom) + 3rem);
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font);
+	font-size-adjust: none;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	-webkit-tap-highlight-color: transparent;
+	text-rendering: optimizeLegibility;
+	overscroll-behavior: none;
+}
+
+html {
+	/* Safety net: the page itself never scrolls sideways; carousels scroll internally. */
+	overflow-x: clip;
+	scrollbar-color: rgb(255 255 255 / 0.18) transparent;
+	scrollbar-width: thin;
+}
+
+body {
+	min-height: 100dvh;
+	line-height: 1.5;
+	font-size: var(--text-m);
+	font-feature-settings: 'ss01', 'cv11';
+	background:
+		radial-gradient(70rem 40rem at 92% -12%, var(--accent-faint), transparent 70%),
+		radial-gradient(50rem 32rem at -10% 110%, rgb(107 200 255 / 0.035), transparent 70%), var(--bg);
+	background-attachment: fixed;
+}
+
+h1,
+h2,
+h3,
+h4 {
+	margin: 0;
+	font-weight: 750;
+	letter-spacing: var(--tracking-tight);
+	line-height: 1.12;
+	text-wrap: balance;
+}
+
+p {
+	margin: 0;
+	text-wrap: pretty;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	cursor: pointer;
+}
+
+a {
+	color: inherit;
+	text-decoration: none;
+}
+
+img,
+svg {
+	display: block;
+}
+
+::selection {
+	background: var(--accent-soft);
+	color: var(--text);
+}
+
+:focus-visible {
+	outline: none;
+	box-shadow: var(--focus-ring);
+}
+
+/* Visually hidden but available to screen readers. */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* Small uppercase label above headings. */
+.eyebrow {
+	font-size: var(--text-xs);
+	font-weight: 700;
+	letter-spacing: var(--tracking-caps);
+	text-transform: uppercase;
+	color: var(--text-3);
+}
+
+/* Glass surface with a faint spectral hairline on top. */
+.glass {
+	background: var(--bg-glass);
+	backdrop-filter: var(--glass-blur);
+	-webkit-backdrop-filter: var(--glass-blur);
+	border: 1px solid var(--line);
+}
+
+/* Film grain overlay; add to a positioned element. */
+.grain::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background-image: var(--grain);
+	background-size: 180px;
+	opacity: 0.09;
+	mix-blend-mode: overlay;
+	border-radius: inherit;
+}
+
+/* Page frame used by routes inside the shell. */
+.page {
+	padding-inline: var(--page-start) var(--page-end);
+	padding-top: calc(var(--safe-top) + var(--topbar-h) + 1.5rem);
+	padding-bottom: calc(var(--shell-bottom) + 4rem);
+}
+
+@media (min-width: 800px) {
+	.page {
+		padding-top: calc(var(--safe-top) + 3rem);
+	}
+}
+
+/* ---- View transitions (page changes) --------------------------------- */
+@keyframes vt-fade-out {
+	to {
+		opacity: 0;
+	}
+}
+
+@keyframes vt-rise-in {
+	from {
+		opacity: 0;
+		transform: translateY(14px) scale(0.995);
+	}
+}
+
+::view-transition-old(root) {
+	animation: vt-fade-out 180ms var(--ease-out) both;
+}
+
+::view-transition-new(root) {
+	animation: vt-rise-in 420ms var(--ease-out) both;
+}
+
+::view-transition-old(shell-nav),
+::view-transition-new(shell-nav) {
+	animation: none;
+}
+
+/* Remote control: keep page changes snappy (and cheap on TV hardware). */
+html[data-input='remote']::view-transition-old(root) {
+	animation-duration: 90ms;
+}
+html[data-input='remote']::view-transition-new(root) {
+	animation: vt-fade-in 160ms var(--ease-out) both;
+}
+@keyframes vt-fade-in {
+	from {
+		opacity: 0;
+	}
+}
+
+/* ---- Reduced motion (OS setting or user.settings.reduceMotion) --------- */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}
+
+html[data-reduce-motion] *,
+html[data-reduce-motion] *::before,
+html[data-reduce-motion] *::after {
+	animation-duration: 0.01ms !important;
+	animation-iteration-count: 1 !important;
+	transition-duration: 0.01ms !important;
+	scroll-behavior: auto !important;
+}

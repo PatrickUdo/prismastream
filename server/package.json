@@ -1,0 +1,24 @@
+{
+	"name": "prismastream-sync-server",
+	"private": true,
+	"version": "0.1.0",
+	"description": "End-to-end versleutelde sync-server en CORS-proxy voor PrismaStream",
+	"type": "module",
+	"engines": {
+		"node": ">=24"
+	},
+	"scripts": {
+		"dev": "node --watch src/main.ts",
+		"start": "node src/main.ts",
+		"test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@hono/node-server": "^2.1.4",
+		"hono": "^4.13.13"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.4",
+		"typescript": "^7.0.2"
+	}
+}
