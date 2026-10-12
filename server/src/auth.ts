@@ -9,14 +9,14 @@
 // signed-in device approves the code with the masterKey sealed to that public key
 // (ECDH + HKDF + AES-GCM, done by the clients). The server only relays the sealed blob.
 import { randomBytes, randomInt, scrypt, timingSafeEqual, type BinaryLike } from 'node:crypto';
+import { signupDecision } from './invites.ts';
 import type { Context, Hono, MiddlewareHandler } from 'hono';
 import type { Env } from './env.ts';
 import type { Config } from './config.ts';
 import { hmac, type ServerKeys } from './keys.ts';
 import type { RateLimiter } from './ratelimit.ts';
-import type { DeviceRow, Kdf, Store } from './store.ts';
+import { InviteUnavailableError, type DeviceRow, type Kdf, type Store } from './store.ts';
 import { newToken, PAIRING_ALPHABET, randomId, sha256hex } from './util.ts';
-
 
 export interface AuthDeps {
 	config: Config;
@@ -109,20 +109,6 @@ function iterationsOf(v: unknown): number | undefined {
 		: undefined;
 }
 
-/** Timing-safe comparison of an invitation code. */
-export function signupCodeValid(given: unknown, expected: string | undefined): boolean {
-	if (!expected || typeof given !== 'string' || !given) return false;
-	const a = Buffer.from(sha256hex('signup:' + given.trim()), 'hex');
-	const b = Buffer.from(sha256hex('signup:' + expected), 'hex');
-	return timingSafeEqual(a, b);
-}
-
-/** Signup policy shared by /v1/accounts (legacy) and /v1/auth/register. */
-export function signupAllowed(config: Config, code: unknown): boolean {
-	if (config.signupCode) return signupCodeValid(code, config.signupCode) || config.allowSignup;
-	return config.allowSignup;
-}
-
 /** Accepts a P-256 public key as raw point (65 bytes), SPKI DER (91 bytes) or a JWK string. */
 export function validPublicKey(v: unknown): boolean {
 	if (typeof v !== 'string' || v.length > 1024) return false;
@@ -177,7 +163,8 @@ export function registerAuthRoutes(app: Hono<Env>, d: AuthDeps) {
 		const retry = limiter.hit('signup:' + ip, 10, 60 * 60_000);
 		if (retry) return tooMany(c, retry);
 		const body = await readJson(c);
-		if (!signupAllowed(config, body.signupCode))
+		const signup = signupDecision(config, store, body.signupCode);
+		if (!signup.ok)
 			return err(c, 403, 'invalid_signup_code', 'Ongeldige of ontbrekende uitnodigingscode');
 		const email = normalizeEmail(body.email);
 		if (!email) return err(c, 400, 'invalid_email', 'Ongeldig e-mailadres');
@@ -203,9 +190,13 @@ export function registerAuthRoutes(app: Hono<Env>, d: AuthDeps) {
 					kdf,
 					authHash: await hashAuthKey(authKey)
 				},
-				{ id: deviceId, tokenHash: sha256hex(token), name: d.deviceName(body.deviceName) }
+				{ id: deviceId, tokenHash: sha256hex(token), name: d.deviceName(body.deviceName) },
+				signup.inviteHash
 			);
-		} catch {
+		} catch (e) {
+			// The invite was used by a parallel signup (atomic, nothing was created).
+			if (e instanceof InviteUnavailableError)
+				return err(c, 403, 'invalid_signup_code', 'Ongeldige of ontbrekende uitnodigingscode');
 			// Unique index race: someone registered the same address meanwhile.
 			return err(c, 409, 'email_taken', 'Er bestaat al een account met dit e-mailadres');
 		}

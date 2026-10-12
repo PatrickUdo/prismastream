@@ -32,6 +32,28 @@ export interface EmailAccountRow extends AccountRow {
 	authHash: string;
 }
 
+export interface InviteRow {
+	id: string;
+	createdAt: number;
+	expiresAt: number | null;
+	usedAt: number | null;
+	usedBy: string | null;
+	/** E-mail of the account that used it (when it still exists). */
+	usedByEmail: string | null;
+	/** The account that used it still exists. */
+	usedByExists: boolean;
+	revokedAt: number | null;
+	note: string | null;
+	status: 'open' | 'used' | 'expired' | 'revoked';
+}
+
+/** Thrown inside the signup transaction when the invite was used/revoked/expired meanwhile. */
+export class InviteUnavailableError extends Error {
+	constructor() {
+		super('invite code not available');
+	}
+}
+
 export interface DeviceCodeRow {
 	deviceCodeHash: string;
 	userCode: string;
@@ -115,6 +137,16 @@ CREATE TABLE IF NOT EXISTS device_codes (
 	account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
 	sealed_key TEXT,
 	ephemeral_public_key TEXT
+);
+CREATE TABLE IF NOT EXISTS invite_codes (
+	id TEXT PRIMARY KEY,
+	code_hash TEXT NOT NULL UNIQUE,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER,
+	used_at INTEGER,
+	used_by TEXT,
+	revoked_at INTEGER,
+	note TEXT
 );
 CREATE TABLE IF NOT EXISTS pairing_codes (
 	code_hash TEXT PRIMARY KEY,
@@ -213,14 +245,113 @@ export class Store {
 
 	// ---- accounts & devices -------------------------------------------------
 
-	createAccount(a: { id: string; salt: string; kdf: Kdf }, d: NewDevice) {
+	createAccount(a: { id: string; salt: string; kdf: Kdf }, d: NewDevice, inviteHash?: string) {
 		const now = Date.now();
 		this.#tx(() => {
 			this.db
 				.prepare('INSERT INTO accounts (id, salt, kdf, created_at) VALUES (?, ?, ?, ?)')
 				.run(a.id, a.salt, JSON.stringify(a.kdf), now);
 			this.#insertDevice(a.id, d, now);
+			if (inviteHash) this.#consumeInvite(inviteHash, a.id, now);
 		});
+	}
+
+	// ---- invite codes ----------------------------------------------------------------
+
+	/** Marks an invite as used; throws (→ rollback of the signup) when it is not available. */
+	#consumeInvite(hash: string, accountId: string, now: number) {
+		const res = this.db
+			.prepare(
+				`UPDATE invite_codes SET used_at = ?, used_by = ?
+				 WHERE code_hash = ? AND used_at IS NULL AND revoked_at IS NULL
+				 AND (expires_at IS NULL OR expires_at > ?)`
+			)
+			.run(now, accountId, hash, now);
+		if (Number(res.changes) !== 1) throw new InviteUnavailableError();
+	}
+
+	createInvite(i: { id: string; codeHash: string; expiresAt: number | null; note?: string }) {
+		this.db
+			.prepare(
+				'INSERT INTO invite_codes (id, code_hash, created_at, expires_at, note) VALUES (?, ?, ?, ?, ?)'
+			)
+			.run(i.id, i.codeHash, Date.now(), i.expiresAt, i.note ?? null);
+	}
+
+	/** True when an unused, unrevoked, unexpired invite with this hash exists. */
+	inviteAvailable(hash: string, now = Date.now()): boolean {
+		return !!this.db
+			.prepare(
+				`SELECT 1 FROM invite_codes WHERE code_hash = ? AND used_at IS NULL AND revoked_at IS NULL
+				 AND (expires_at IS NULL OR expires_at > ?)`
+			)
+			.get(hash, now);
+	}
+
+	listInvites(now = Date.now()): InviteRow[] {
+		const rows = this.db
+			.prepare(
+				`SELECT i.*, a.email AS used_email, a.id AS used_exists FROM invite_codes i
+				 LEFT JOIN accounts a ON a.id = i.used_by ORDER BY i.created_at`
+			)
+			.all() as Row[];
+		return rows.map((r) => {
+			const n = (v: unknown) => (v == null ? null : Number(v));
+			const row: InviteRow = {
+				id: String(r.id),
+				createdAt: Number(r.created_at),
+				expiresAt: n(r.expires_at),
+				usedAt: n(r.used_at),
+				usedBy: r.used_by == null ? null : String(r.used_by),
+				usedByEmail: r.used_email == null ? null : String(r.used_email),
+				usedByExists: r.used_exists != null,
+				revokedAt: n(r.revoked_at),
+				note: r.note == null ? null : String(r.note),
+				status: 'open'
+			};
+			row.status = row.usedAt
+				? 'used'
+				: row.revokedAt
+					? 'revoked'
+					: row.expiresAt !== null && row.expiresAt <= now
+						? 'expired'
+						: 'open';
+			return row;
+		});
+	}
+
+	/** Revokes an unused invite. Returns false when unknown or already used. */
+	revokeInvite(id: string): boolean {
+		const res = this.db
+			.prepare(
+				'UPDATE invite_codes SET revoked_at = ? WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL'
+			)
+			.run(Date.now(), id);
+		return Number(res.changes) === 1;
+	}
+
+	/** Accounts with device count and last activity (for the admin CLI). */
+	listAccounts(): {
+		id: string;
+		email: string | null;
+		createdAt: number;
+		devices: number;
+		lastSeenAt: number | null;
+	}[] {
+		const rows = this.db
+			.prepare(
+				`SELECT a.id, a.email, a.created_at, COUNT(d.id) AS devices, MAX(d.last_seen_at) AS seen
+				 FROM accounts a LEFT JOIN devices d ON d.account_id = a.id
+				 GROUP BY a.id ORDER BY a.created_at`
+			)
+			.all() as Row[];
+		return rows.map((r) => ({
+			id: String(r.id),
+			email: r.email == null ? null : String(r.email),
+			createdAt: Number(r.created_at),
+			devices: Number(r.devices),
+			lastSeenAt: r.seen == null ? null : Number(r.seen)
+		}));
 	}
 
 	getAccount(id: string): AccountRow | undefined {
@@ -253,15 +384,13 @@ export class Store {
 
 	deviceByTokenHash(hash: string): DeviceRow | undefined {
 		const r = this.db.prepare('SELECT * FROM devices WHERE token_hash = ?').get(hash) as
-			| Row
-			| undefined;
+			Row | undefined;
 		return r ? toDevice(r) : undefined;
 	}
 
 	deviceByProxyTokenHash(hash: string): DeviceRow | undefined {
 		const r = this.db.prepare('SELECT * FROM devices WHERE proxy_token_hash = ?').get(hash) as
-			| Row
-			| undefined;
+			Row | undefined;
 		return r ? toDevice(r) : undefined;
 	}
 
@@ -314,7 +443,8 @@ export class Store {
 
 	createEmailAccount(
 		a: { id: string; email: string; salt: string; kdf: Kdf; authHash: string },
-		d: NewDevice
+		d: NewDevice,
+		inviteHash?: string
 	) {
 		const now = Date.now();
 		this.#tx(() => {
@@ -324,13 +454,13 @@ export class Store {
 				)
 				.run(a.id, a.salt, JSON.stringify(a.kdf), now, a.email, a.authHash);
 			this.#insertDevice(a.id, d, now);
+			if (inviteHash) this.#consumeInvite(inviteHash, a.id, now);
 		});
 	}
 
 	accountByEmail(email: string): EmailAccountRow | undefined {
 		const r = this.db.prepare('SELECT * FROM accounts WHERE email = ?').get(email) as
-			| Row
-			| undefined;
+			Row | undefined;
 		if (!r || !r.auth_hash) return undefined;
 		return {
 			id: String(r.id),
@@ -345,8 +475,7 @@ export class Store {
 
 	authHashOf(accountId: string): string | undefined {
 		const r = this.db.prepare('SELECT auth_hash FROM accounts WHERE id = ?').get(accountId) as
-			| Row
-			| undefined;
+			Row | undefined;
 		return r?.auth_hash ? String(r.auth_hash) : undefined;
 	}
 
@@ -379,14 +508,15 @@ export class Store {
 
 	deviceByPlayTokenHash(hash: string): DeviceRow | undefined {
 		const r = this.db.prepare('SELECT * FROM devices WHERE play_token_hash = ?').get(hash) as
-			| Row
-			| undefined;
+			Row | undefined;
 		return r ? toDevice(r) : undefined;
 	}
 
 	// ---- device codes (TV login) -------------------------------------------------
 
-	createDeviceCode(c: Omit<DeviceCodeRow, 'accountId' | 'sealedKey' | 'ephemeralPublicKey' | 'lastPollAt'>) {
+	createDeviceCode(
+		c: Omit<DeviceCodeRow, 'accountId' | 'sealedKey' | 'ephemeralPublicKey' | 'lastPollAt'>
+	) {
 		this.db
 			.prepare(
 				`INSERT INTO device_codes (device_code_hash, user_code, public_key, device_name, created_at, expires_at)
@@ -397,15 +527,13 @@ export class Store {
 
 	deviceCodeByUserCode(userCode: string): DeviceCodeRow | undefined {
 		const r = this.db.prepare('SELECT * FROM device_codes WHERE user_code = ?').get(userCode) as
-			| Row
-			| undefined;
+			Row | undefined;
 		return r ? toDeviceCode(r) : undefined;
 	}
 
 	deviceCodeByHash(hash: string): DeviceCodeRow | undefined {
-		const r = this.db
-			.prepare('SELECT * FROM device_codes WHERE device_code_hash = ?')
-			.get(hash) as Row | undefined;
+		const r = this.db.prepare('SELECT * FROM device_codes WHERE device_code_hash = ?').get(hash) as
+			Row | undefined;
 		return r ? toDeviceCode(r) : undefined;
 	}
 
@@ -427,7 +555,9 @@ export class Store {
 	}
 
 	touchDeviceCodePoll(hash: string, now: number) {
-		this.db.prepare('UPDATE device_codes SET last_poll_at = ? WHERE device_code_hash = ?').run(now, hash);
+		this.db
+			.prepare('UPDATE device_codes SET last_poll_at = ? WHERE device_code_hash = ?')
+			.run(now, hash);
 	}
 
 	/** Consumes an approved code and adds the device atomically. */
@@ -489,8 +619,7 @@ export class Store {
 		| { ok: false; reason: 'invalid' | 'expired' | 'device-limit' } {
 		return this.#tx(() => {
 			const r = this.db.prepare('SELECT * FROM pairing_codes WHERE code_hash = ?').get(codeHash) as
-				| Row
-				| undefined;
+				Row | undefined;
 			if (!r) return { ok: false as const, reason: 'invalid' as const };
 			this.db.prepare('DELETE FROM pairing_codes WHERE code_hash = ?').run(codeHash);
 			if (Number(r.expires_at) <= now) return { ok: false as const, reason: 'expired' as const };

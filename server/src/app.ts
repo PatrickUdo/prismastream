@@ -2,7 +2,8 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
-import { registerAuthRoutes, signupAllowed } from './auth.ts';
+import { registerAuthRoutes } from './auth.ts';
+import { signupDecision } from './invites.ts';
 import { redactText } from './catalog/core.ts';
 import { registerCatalogRoutes } from './catalog/routes.ts';
 import { CatalogService } from './catalog/service.ts';
@@ -12,7 +13,7 @@ import { deriveKeys, loadMasterKey, type ServerKeys } from './keys.ts';
 import { EventHub } from './events.ts';
 import { parseTarget, ProxyError, proxyFetch } from './proxy.ts';
 import { RateLimiter } from './ratelimit.ts';
-import { Store, type DeviceRow, type DocRow, type Kdf } from './store.ts';
+import { InviteUnavailableError, Store, type DeviceRow, type DocRow, type Kdf } from './store.ts';
 import {
 	newPairingCode,
 	newProxyToken,
@@ -219,7 +220,8 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		const retry = limiter.hit('signup:' + clientIp(c), 10, 60 * 60_000);
 		if (retry) return tooMany(c, retry);
 		const body = await readJson(c);
-		if (!signupAllowed(config, body.signupCode))
+		const signup = signupDecision(config, store, body.signupCode);
+		if (!signup.ok)
 			return err(c, 403, 'signup_disabled', 'Signup requires a valid invitation code');
 		let kdf = DEFAULT_KDF;
 		const k = body.kdf as Partial<Kdf> | undefined;
@@ -238,10 +240,17 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		const deviceId = randomId('d_', 9);
 		const token = newToken();
 		const salt = newSalt();
-		store.createAccount(
-			{ id: accountId, salt, kdf },
-			{ id: deviceId, tokenHash: sha256hex(token), name: deviceName(body.deviceName) }
-		);
+		try {
+			store.createAccount(
+				{ id: accountId, salt, kdf },
+				{ id: deviceId, tokenHash: sha256hex(token), name: deviceName(body.deviceName) },
+				signup.inviteHash
+			);
+		} catch (e) {
+			if (e instanceof InviteUnavailableError)
+				return err(c, 403, 'signup_disabled', 'Signup requires a valid invitation code');
+			throw e;
+		}
 		return c.json({ accountId, deviceId, token, salt, kdf }, 201);
 	});
 
@@ -338,7 +347,10 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 
 	app.get('/v1/docs', auth, (c) => {
 		const since = Math.max(0, Math.floor(Number(c.req.query('since') ?? 0)) || 0);
-		const limit = Math.min(500, Math.max(1, Math.floor(Number(c.req.query('limit') ?? 200)) || 200));
+		const limit = Math.min(
+			500,
+			Math.max(1, Math.floor(Number(c.req.query('limit') ?? 200)) || 200)
+		);
 		const res = store.listDocsSince(c.get('device').accountId, since, limit);
 		return c.json({ docs: res.docs.map(docJson), cursor: res.cursor, more: res.more });
 	});
@@ -474,7 +486,12 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 
 	app.notFound((c) => err(c, 404, 'not_found', 'Not found'));
 	app.onError((e, c) => {
-		console.error('[error]', c.req.method, redactPath(c.req.path), redactText((e as Error).message));
+		console.error(
+			'[error]',
+			c.req.method,
+			redactPath(c.req.path),
+			redactText((e as Error).message)
+		);
 		return err(c, 500, 'internal', 'Internal server error');
 	});
 

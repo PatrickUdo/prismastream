@@ -47,7 +47,7 @@ bijgehouden; `src/core/node.test.ts` controleert dat de exports overeenkomen).
 | `CORS_ORIGINS` | | Extra origins (kommagescheiden). Productie: `https://prismastream.patrickudo.nl`. De Capacitor-origins (`capacitor://localhost`, `https://localhost`, `http://localhost`, `ionic://localhost`) staan er standaard al in |
 | `TRUST_PROXY` | `false` | `true` achter Nginx Proxy Manager (`X-Forwarded-For/-Proto/-Host`) |
 | `ALLOW_SIGNUP` | `true` (dev), `false` (productie) | Open aanmelding zonder code |
-| `SIGNUP_CODE` | | Uitnodigingscode voor `POST /v1/auth/register` (en de legacy `POST /v1/accounts`), timing-safe vergeleken |
+| `SIGNUP_CODE` | | Hoofdcode voor `POST /v1/auth/register` (en de legacy `POST /v1/accounts`): onbeperkt herbruikbaar, timing-safe vergeleken. Daarnaast werken eenmalige uitnodigingscodes (zie *Beheer*) |
 | `DEMO_SOURCE` | `true` (dev), `false` (productie) | De fictieve demobibliotheek als bron per account |
 | `VERIFY_URL` | `https://prismastream.patrickudo.nl/activate` | Url die een tv bij de inlogcode toont |
 | `TMDB_API_KEY` | | Optioneel: server-side TMDB-verrijking, gedeelde cache. `TMDB_MAX_TITLES` (400) per build |
@@ -172,7 +172,7 @@ tv-login reist de hoofdsleutel alleen ECDH-versleuteld naar de publieke sleutel 
 
 **Inloggen:** generieke foutmelding, nep-salt voor onbekende e-mailadressen (geen
 account-enumeratie), scrypt ook voor onbekende adressen (gelijke tijd), lockout na 10 mislukte
-pogingen per e-mailadres (15 min) en rate-limits per IP. Aanmelden alleen met `SIGNUP_CODE`.
+pogingen per e-mailadres (15 min) en rate-limits per IP. Aanmelden alleen met `SIGNUP_CODE` of een eenmalige uitnodigingscode (alleen de SHA-256-hash wordt bewaard; de code wordt in dezelfde transactie als het account als gebruikt gemarkeerd, dus twee gelijktijdige aanmeldingen met één code leveren precies één account op).
 
 **Apparaten:** API-tokens (`pst_`) alleen in de `Authorization`-header en als SHA-256-hash
 opgeslagen. Play-tokens (`pt_`) mogen in urls staan, zijn per apparaat, deterministisch uit
@@ -236,6 +236,36 @@ networks:
 In Nginx Proxy Manager: proxy host `backend.prismastream.patrickudo.nl` → `backend:8787`,
 SSL aan, en bij *Advanced* `proxy_buffering off; proxy_read_timeout 3600s;` (streams en
 long-poll). De image zet `NODE_OPTIONS=--max-old-space-size=512` en heeft een healthcheck.
+
+## Beheer (CLI): uitnodigingen en accounts
+
+De CLI werkt rechtstreeks op de databases in `DATA_DIR` (geen HTTP), ook terwijl de server draait.
+Lokaal: `node src/cli.ts …` in `server/`. In de container:
+
+```bash
+# Eenmalige uitnodigingscode maken (standaard 30 dagen geldig; --days 0 = verloopt nooit).
+# De code (XXXXX-XXXXX) wordt één keer getoond; geef hem door aan de genodigde.
+docker exec prismastream-backend node src/cli.ts invite create --note "Jan"
+docker exec prismastream-backend node src/cli.ts invite create --days 7 --note "Familie"
+
+# Overzicht (zonder de codes zelf): id, status (open, gebruikt, verlopen, ingetrokken),
+# notitie, aangemaakt, verloopt, gebruikt op en door welk e-mailadres.
+docker exec prismastream-backend node src/cli.ts invite list
+
+# Een ongebruikte code intrekken (id uit de lijst).
+docker exec prismastream-backend node src/cli.ts invite revoke inv_XXXXXXXX
+
+# Accounts: e-mail, aangemaakt, aantal apparaten, laatste activiteit.
+docker exec prismastream-backend node src/cli.ts accounts list
+
+# Account verwijderen, met apparaten, gesynchroniseerde data, bronnen en catalogus.
+# Zonder --yes toont hij alleen wat er zou gebeuren.
+docker exec prismastream-backend node src/cli.ts accounts delete jan@example.com --yes
+```
+
+Codes zijn 10 tekens Crockford-base32 (zonder I, L, O en U). Hoofdletters, spaties en streepjes
+maken niet uit, en I/L en O worden als 1 en 0 gelezen. De hoofdcode `SIGNUP_CODE` blijft
+onbeperkt bruikbaar. De rate-limit op aanmelden (10 per uur per IP) geldt voor beide.
 
 ## Back-up
 

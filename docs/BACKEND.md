@@ -158,3 +158,4 @@ Aanvullingen en precisering van het contract door de server (alles additief, ten
 10. **Aanmelden:** de legacy `POST /v1/accounts` accepteert ook `signupCode` en weigert zonder code als `ALLOW_SIGNUP=false`.
 11. **CORS:** `PATCH` en de header `If-None-Match` zijn toegestaan.
 12. **Nieuwe env:** `DEMO_SOURCE`, `DATA_DIR`, `SERVER_KEY(_FILE)`, `SIGNUP_CODE`, `TMDB_API_KEY`, `VERIFY_URL`, `CATALOG_*`, `*_MAX_BYTES`, `FETCH_*` (zie `server/README.md`).
+13. **Uitnodigingscodes:** `signupCode` in `POST /v1/auth/register` (en de legacy `POST /v1/accounts`) mag de hoofdcode `SIGNUP_CODE` zijn (herbruikbaar) of een eenmalige uitnodigingscode (`XXXXX-XXXXX`, Crockford-base32; hoofdletters, spaties en streepjes maken niet uit). Een gebruikte, verlopen of ingetrokken code geeft `403 invalid_signup_code` (legacy: `403 signup_disabled`). Codes maak je met de CLI (`node src/cli.ts invite create`, zie `server/README.md`).
