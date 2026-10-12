@@ -6,8 +6,7 @@
 	import { untrack } from 'svelte';
 	import { prefersReducedMotion } from 'svelte/motion';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
-	import { initSync } from '#lib/sync/index.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
 	import { i18n } from '#lib/i18n/index.svelte.ts';
 	import { luminance } from '#lib/components/art.ts';
 	import { initTvNavigation, tvAfterNavigate, tvBeforeNavigate } from '#lib/tv/focus.svelte.ts';
@@ -15,9 +14,22 @@
 
 	let { children }: LayoutProps = $props();
 
+	// User data, sync and the catalog in the right mode (local or remote, see library).
 	$effect(() => {
-		void user.init().then(() => initSync());
-		void catalog.init();
+		void library.init();
+	});
+
+	// Back online or back in the app: check the backend again (remote mode).
+	$effect(() => {
+		const poke = () => {
+			if (document.visibilityState === 'visible') library.poke();
+		};
+		window.addEventListener('online', poke);
+		document.addEventListener('visibilitychange', poke);
+		return () => {
+			window.removeEventListener('online', poke);
+			document.removeEventListener('visibilitychange', poke);
+		};
 	});
 
 	// Accent colour from settings (+ a readable foreground for it).

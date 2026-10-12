@@ -3,25 +3,28 @@
 	(all in the query string: ?genre=&sort=&lang=) above an incrementally rendered grid.
 -->
 <script lang="ts">
-	import type { Title } from '#lib/types.ts';
+	import type { TitleCard as Card } from '#lib/types.ts';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { languageName } from '#lib/lang.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
-	import { genreCounts, languageCounts } from '#lib/recommend.ts';
+	import { errorText, library } from '#lib/catalog/library.svelte.ts';
+	import { resource } from '#lib/catalog/resource.svelte.ts';
+	import { isAbortError } from '#lib/backend/client.ts';
+	import type { TitleSort } from '#lib/catalog/provider.ts';
 	import PosterGrid from './PosterGrid.svelte';
 	import Chip from './Chip.svelte';
 	import Icon from './Icon.svelte';
 	import EmptyState from './EmptyState.svelte';
 	import Button from './Button.svelte';
+	import CloudBanner from './CloudBanner.svelte';
 	import { libraryHref } from './links.ts';
-	import { displayTitle } from './titles.ts';
 	import { profilePrefs } from './play.ts';
 
-	type Sort = 'popular' | 'new' | 'az' | 'year';
+	type Sort = TitleSort;
 	const SORTS: Sort[] = ['popular', 'new', 'az', 'year'];
+	const PAGE = 60;
 
 	interface Props {
 		kind: 'movie' | 'series';
@@ -36,34 +39,89 @@
 		SORTS.includes(params.get('sort') as Sort) ? (params.get('sort') as Sort) : 'popular'
 	);
 
-	const loading = $derived(catalog.status === 'idle' || catalog.status === 'loading');
-	const base = $derived(kids.visibleTitles.filter((t) => t.kind === kind));
-	const genres = $derived(genreCounts(base));
+	// ---- facets (genres, languages) -------------------------------------------------------
+	const facets = resource(
+		() => (library.initialized ? `${library.version}|${kids.active}|${kind}` : null),
+		(_k, signal) => library.provider.facets({ kind, kids: kids.active }, signal)
+	);
+	const genres = $derived(facets.value?.genres ?? []);
 	const langs = $derived.by(() => {
 		const preferred = profilePrefs().audioLangs;
-		return languageCounts(base).sort((a, b) => {
+		return [...(facets.value?.languages ?? [])].sort((a, b) => {
 			const pa = preferred.indexOf(a.code);
 			const pb = preferred.indexOf(b.code);
 			if (pa !== pb) return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
-			return b.count - a.count;
+			return (b.count ?? 0) - (a.count ?? 0);
 		});
 	});
 
-	const collator = $derived(new Intl.Collator(i18n.locale, { sensitivity: 'base', numeric: true }));
-	const filtered = $derived.by(() => {
-		let list = base;
-		if (genre) list = list.filter((t) => t.genres.includes(genre));
-		if (lang) list = list.filter((t) => t.languages.includes(lang));
-		const sorted = [...list];
-		const cmp: Record<Sort, (a: Title, b: Title) => number> = {
-			popular: (a, b) => b.popularity - a.popularity,
-			new: (a, b) => b.addedAt - a.addedAt,
-			az: (a, b) => collator.compare(displayTitle(a), displayTitle(b)),
-			year: (a, b) =>
-				(b.year ?? 0) - (a.year ?? 0) || collator.compare(displayTitle(a), displayTitle(b))
-		};
-		return sorted.sort(cmp[sort]);
+	// ---- titles: first page per query, more pages on scroll (cursor) ------------------------
+	const queryKey = $derived(
+		library.initialized
+			? `${library.version}|${kids.active}|${kind}|${genre}|${lang}|${sort}|${i18n.locale}`
+			: null
+	);
+	let items = $state.raw<Card[]>([]);
+	let total = $state(0);
+	let cursor = $state<string | undefined>();
+	let firstLoading = $state(true);
+	let loadingMore = $state(false);
+	let failed = $state<unknown>(null);
+	let pageCtrl: AbortController | null = null;
+
+	$effect(() => {
+		const key = queryKey;
+		if (key === null) return;
+		const ctrl = new AbortController();
+		pageCtrl?.abort();
+		pageCtrl = null;
+		firstLoading = true;
+		failed = null;
+		loadingMore = false;
+		library.provider
+			.titles({ kind, genre, lang, sort, kids: kids.active, limit: PAGE }, ctrl.signal)
+			.then((r) => {
+				if (ctrl.signal.aborted) return;
+				items = kids.filterTitles(r.items);
+				total = r.total;
+				cursor = r.nextCursor;
+				firstLoading = false;
+			})
+			.catch((err: unknown) => {
+				if (ctrl.signal.aborted || isAbortError(err)) return;
+				items = [];
+				total = 0;
+				cursor = undefined;
+				failed = err;
+				firstLoading = false;
+			});
+		return () => ctrl.abort();
 	});
+
+	function more() {
+		if (!cursor || loadingMore) return;
+		const ctrl = new AbortController();
+		pageCtrl = ctrl;
+		loadingMore = true;
+		const key = queryKey;
+		library.provider
+			.titles({ kind, genre, lang, sort, kids: kids.active, limit: PAGE, cursor }, ctrl.signal)
+			.then((r) => {
+				if (ctrl.signal.aborted || key !== queryKey) return;
+				const have = new Set(items.map((c) => c.id));
+				items = [...items, ...kids.filterTitles(r.items).filter((c) => !have.has(c.id))];
+				cursor = r.nextCursor;
+				total = Math.max(r.total, items.length);
+			})
+			.catch(() => {
+				// Stop paging; scrolling again after a moment retries via a new sentinel hit.
+			})
+			.finally(() => {
+				if (pageCtrl === ctrl) loadingMore = false;
+			});
+	}
+
+	const loading = $derived(firstLoading || library.status === 'loading');
 
 	function href(next: { genre?: string; sort?: string; lang?: string }) {
 		const merged = { genre, sort: sort === 'popular' ? '' : sort, lang, ...next };
@@ -75,11 +133,12 @@
 		void goto(href(next), { replace: true, reset: false });
 	}
 
+	const filtered = $derived(!!genre || !!lang);
 	const heading = $derived(kind === 'movie' ? t('nav.movies') : t('nav.series'));
 	const countText = $derived(
-		new Intl.NumberFormat(i18n.locale).format(filtered.length) +
+		new Intl.NumberFormat(i18n.locale).format(total) +
 			' ' +
-			(filtered.length === 1 ? t('ui.title') : t('ui.titles'))
+			(total === 1 ? t('ui.title') : t('ui.titles'))
 	);
 </script>
 
@@ -99,14 +158,14 @@
 	<div class="filters" data-sveltekit-reset="false" data-sveltekit-replacestate>
 		<nav class="genres" aria-label={t('ui.filterGenre')} data-nav-row>
 			<Chip href={href({ genre: '' })} selected={!genre} data-focusable>{t('ui.allGenres')}</Chip>
-			{#each genres as g (g.genre)}
+			{#each genres as g (g.slug)}
 				<Chip
-					href={href({ genre: g.genre })}
-					selected={genre === g.genre}
+					href={href({ genre: g.slug })}
+					selected={genre === g.slug}
 					hint={g.count}
 					data-focusable
 				>
-					{g.genre}
+					{g.name}
 				</Chip>
 			{/each}
 		</nav>
@@ -136,7 +195,9 @@
 				>
 					<option value="">{t('ui.allLanguages')}</option>
 					{#each langs as l (l.code)}
-						<option value={l.code}>{languageName(l.code, i18n.locale)} ({l.count})</option>
+						<option value={l.code}
+							>{languageName(l.code, i18n.locale)}{l.count ? ` (${l.count})` : ''}</option
+						>
 					{/each}
 				</select>
 				<Icon name="chevron-down" size="0.9rem" />
@@ -144,20 +205,36 @@
 		</div>
 	</div>
 
-	{#if !loading && filtered.length === 0}
+	<CloudBanner />
+	{#if !loading && failed}
+		<EmptyState icon="alert" tone="error" title={t('common.error')} body={t(errorText(failed))}>
+			{#snippet actions()}
+				<Button variant="glass" icon="refresh" onclick={() => library.poke()}>
+					{t('common.retry')}
+				</Button>
+			{/snippet}
+		</EmptyState>
+	{:else if !loading && items.length === 0}
 		<EmptyState
 			icon="film"
-			title={base.length ? t('ui.noResults') : t('ui.libraryEmpty')}
-			body={base.length ? t('ui.noResultsBody') : t('home.emptyBody')}
+			title={filtered ? t('ui.noResults') : t('ui.libraryEmpty')}
+			body={filtered ? t('ui.noResultsBody') : t('cloud.empty.body')}
 		>
 			{#snippet actions()}
-				{#if base.length}
+				{#if filtered}
 					<Button variant="glass" href={libraryHref(kind)}>{t('ui.clearFilters')}</Button>
 				{/if}
 			{/snippet}
 		</EmptyState>
 	{:else}
-		<PosterGrid titles={filtered} {loading} resetKey="{kind}|{genre}|{lang}|{sort}" />
+		<PosterGrid
+			titles={items}
+			{loading}
+			resetKey="{kind}|{genre}|{lang}|{sort}"
+			hasMore={!!cursor}
+			{loadingMore}
+			onmore={more}
+		/>
 	{/if}
 </div>
 

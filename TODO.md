@@ -86,6 +86,7 @@ Eigendom: `src/lib/merge/`, `src/lib/sample/`, `src/lib/tmdb/`, `src/lib/stores/
   - ⬜ Fase C: sync met de bestaande server (E2E-crypto in Swift met CryptoKit)
   - ⬜ tvOS: profielkiezer bij het opstarten, kindermodus met pincode, Top Shelf-extensie
   - ✅ Dode demostream (Sintel, 403) vervangen door Apple bipbop (TS, multi-audio en ondertitels)
+
 ## Ronde 4: PrismaStream Cloud (server-side catalogus en hosting)
 
 - ✅ Keuze gebruiker: de server haalt bronnen op (inloggegevens versleuteld op de server), persoonlijke data blijft E2E; contract in docs/BACKEND.md

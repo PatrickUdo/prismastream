@@ -3,7 +3,7 @@
 	gentle drift; pauses on hover/focus, when the tab is hidden and with reduced motion.
 -->
 <script lang="ts">
-	import type { Title } from '#lib/types.ts';
+	import type { TitleCard as Card } from '#lib/types.ts';
 	import { prefersReducedMotion } from 'svelte/motion';
 	import { languageName } from '#lib/lang.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
@@ -18,7 +18,7 @@
 	import { playAction, profilePrefs } from './play.ts';
 
 	interface Props {
-		titles: Title[];
+		titles: Card[];
 		/** Milliseconds per slide. */
 		interval?: number;
 	}
@@ -53,7 +53,7 @@
 		return () => document.removeEventListener('visibilitychange', onVis);
 	});
 
-	function langLine(title: Title): string {
+	function langLine(title: Card): string {
 		const langs = sortLangsByPreference(knownLangs(title.languages), profilePrefs().audioLangs);
 		const names = langs.slice(0, 3).map((l) => languageName(l, i18n.locale));
 		const more = langs.length - names.length;

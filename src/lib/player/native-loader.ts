@@ -277,6 +277,20 @@ export function createNativeFallbackLoader(Base: LoaderCtor, deps: NativeLoaderD
 				headers.Range = `bytes=${context.rangeStart ?? 0}-${context.rangeEnd - 1}`;
 			const binary = context.responseType === 'arraybuffer';
 
+			// hls.js callbacks run inside this promise chain: an exception thrown by hls.js
+			// (for example a request that finishes after a zap or after leaving the player,
+			// when its controllers are gone) would surface as an unhandled rejection
+			// ("Uncaught (in promise) TypeError ... reading 'id'"). Only deliver results to
+			// a live loader, and contain anything hls.js throws.
+			const alive = () => token === this.#token && this.#callbacks === callbacks;
+			const deliver = (fn: () => void) => {
+				if (!alive()) return;
+				try {
+					fn();
+				} catch (err) {
+					console.warn('[player] hls.js callback failed', err instanceof Error ? err.message : err);
+				}
+			};
 			deps
 				.request({
 					url: context.url,
@@ -286,17 +300,19 @@ export function createNativeFallbackLoader(Base: LoaderCtor, deps: NativeLoaderD
 					readTimeout: loadMs
 				})
 				.then((res) => {
-					if (token !== this.#token) return;
+					if (!alive()) return;
 					clearTimeout(this.#timer);
 					const end = now();
 					this.#nativeHeaders = res.headers ?? {};
 					if (res.status < 200 || res.status >= 300) {
 						stats.loading.first = stats.loading.end = end;
-						callbacks.onError(
-							{ code: res.status, text: `HTTP ${res.status}` },
-							context,
-							null,
-							stats
+						deliver(() =>
+							callbacks.onError(
+								{ code: res.status, text: `HTTP ${res.status}` },
+								context,
+								null,
+								stats
+							)
 						);
 						return;
 					}
@@ -308,23 +324,27 @@ export function createNativeFallbackLoader(Base: LoaderCtor, deps: NativeLoaderD
 					stats.loading.end = end;
 					stats.loaded = stats.total = bytes;
 					stats.bwEstimate = timing.bwEstimate;
-					callbacks.onProgress?.(stats, context, data, null);
-					callbacks.onSuccess(
-						{ url: res.url || context.url, data, code: res.status },
-						stats,
-						context,
-						null
+					deliver(() => callbacks.onProgress?.(stats, context, data, null));
+					deliver(() =>
+						callbacks.onSuccess(
+							{ url: res.url || context.url, data, code: res.status },
+							stats,
+							context,
+							null
+						)
 					);
 				})
 				.catch((err: unknown) => {
-					if (token !== this.#token) return;
+					if (!alive()) return;
 					clearTimeout(this.#timer);
 					stats.loading.end = now();
-					callbacks.onError(
-						{ code: 0, text: err instanceof Error ? err.message : String(err) },
-						context,
-						null,
-						stats
+					deliver(() =>
+						callbacks.onError(
+							{ code: 0, text: err instanceof Error ? err.message : String(err) },
+							context,
+							null,
+							stats
+						)
 					);
 				});
 		}

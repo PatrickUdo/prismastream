@@ -3,7 +3,7 @@
 	reveal (title, meta, languages). Always shows the language badge and best quality.
 -->
 <script lang="ts">
-	import type { Title } from '#lib/types.ts';
+	import type { TitleCard as Card } from '#lib/types.ts';
 	import { t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import Poster from './Poster.svelte';
@@ -16,7 +16,7 @@
 	import { bestQuality, titleMeta } from './format.ts';
 
 	interface Props {
-		title: Title;
+		title: Card;
 		eager?: boolean;
 		/** Show watch progress when available (default true). */
 		showProgress?: boolean;

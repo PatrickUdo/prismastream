@@ -6,11 +6,11 @@
 
 ## Productie
 
-| Wat | Waar |
-|---|---|
-| Web-app (statische SPA) | `https://prismastream.patrickudo.nl` (nginx-container) |
-| Backend (API, catalogus, sync, play-redirects, proxy) | `https://backend.prismastream.patrickudo.nl` (Node-container, poort 8787) |
-| Host | `vps.prisma-scripts.com` (x86_64, ±1 GB RAM vrij!), Docker, Nginx Proxy Manager op het netwerk `proxy`, stack in `/opt/stacks/prismastream` |
+| Wat                                                   | Waar                                                                                                                                        |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web-app (statische SPA)                               | `https://prismastream.patrickudo.nl` (nginx-container)                                                                                      |
+| Backend (API, catalogus, sync, play-redirects, proxy) | `https://backend.prismastream.patrickudo.nl` (Node-container, poort 8787)                                                                   |
+| Host                                                  | `vps.prisma-scripts.com` (x86_64, ±1 GB RAM vrij!), Docker, Nginx Proxy Manager op het netwerk `proxy`, stack in `/opt/stacks/prismastream` |
 
 **Resourcebudget:** de backend-container krijgt `mem_limit: 768m` en Node `--max-old-space-size=512`. Er draait maximaal 1 catalogus-build tegelijk (wachtrij). Streams en grote downloads gaan streamend door, niet in het geheugen.
 
@@ -29,32 +29,51 @@
 Alle responses zijn JSON, met `Cache-Control` en een `ETag` waar dat zinvol is (`If-None-Match` geeft dan `304`). Een **TitleCard** is een lichte titel. Hij bevat **geen** `variants` en **geen** `seasons`:
 
 ```ts
-type TitleCard = Pick<Title, 'id'|'kind'|'title'|'originalTitle'|'year'|'genres'|'rating'|'runtimeMin'
-  |'posterUrl'|'backdropUrl'|'logoUrl'|'addedAt'|'popularity'|'languages'|'subtitleLanguages'|'qualities'
-  |'certification'|'kidsSafe'|'originalLang'> & {
-  altTitles: { title: string; lang?: string }[];   // max. 12 (voor displayTitle en zoeken)
-  overview?: string;                               // max. 280 tekens
-  seasonCount?: number;
+type TitleCard = Pick<
+	Title,
+	| 'id'
+	| 'kind'
+	| 'title'
+	| 'originalTitle'
+	| 'year'
+	| 'genres'
+	| 'rating'
+	| 'runtimeMin'
+	| 'posterUrl'
+	| 'backdropUrl'
+	| 'logoUrl'
+	| 'addedAt'
+	| 'popularity'
+	| 'languages'
+	| 'subtitleLanguages'
+	| 'qualities'
+	| 'certification'
+	| 'kidsSafe'
+	| 'originalLang'
+> & {
+	altTitles: { title: string; lang?: string }[]; // max. 12 (voor displayTitle en zoeken)
+	overview?: string; // max. 280 tekens
+	seasonCount?: number;
 };
 ```
 
-| Methode en pad | Wat |
-|---|---|
-| `GET /v1/sources` | Bronnen van het account, zonder secrets: `{ id, type, name, enabled, serverUrl?, username?, playlistUrl?(gemaskeerd), epgUrl?, addedAt, lastSyncAt?, lastError?, stats?, account? }[]`. De ingebouwde demo-bron (`sample`) staat erbij en is aan/uit te zetten. |
-| `POST /v1/sources/test` | Body: `{ type, serverUrl?, username?, password?, playlistUrl?, epgUrl? }`. Test zonder op te slaan. Geeft `{ ok, movies, series, channels, expiresAt?, status?, warnings? }` of `{ ok:false, code, message }`. |
-| `POST /v1/sources` | Dezelfde body plus `name`. Slaat op (wachtwoord versleuteld) en start een refresh. Geeft de bron terug. |
-| `PATCH /v1/sources/:id` | Naam, enabled, urls of een nieuw wachtwoord wijzigen. |
-| `DELETE /v1/sources/:id` | Verwijdert de bron, zijn cache en zijn secrets. |
-| `POST /v1/catalog/refresh` | Body `{ force?: boolean, sourceId?: string }`. Zet een refresh in de wachtrij. Geeft `202` met de status. |
-| `GET /v1/catalog/meta` | `{ builtAt, status: 'empty'\|'building'\|'ready'\|'error', progress?, error?, counts: { movies, series, channels, programmes }, genres: { slug, name, count }[], languages: { lang, count }[], groups: { name, count }[] }` |
-| `GET /v1/catalog/home` | Query `?kids=1&limit=20`. Geeft `{ featured: TitleCard[], recent, popularMovies, trendingSeries, genres: {slug,name,count}[], live: ChannelCard[] }`. Persoonlijke rijen (verder kijken, mijn lijst, aanbevolen) vult de client met `ids=`- en `recommend`-calls. |
-| `GET /v1/catalog/titles` | Query `?kind=movie\|series&genre=<slug>&lang=<code>&sort=popular\|new\|az\|year&kids=1&limit=60&cursor=<opaque>` of `?ids=a,b,c` (max. 100). Geeft `{ items: TitleCard[], nextCursor?: string, total }`. |
-| `GET /v1/catalog/titles/:id` | De volledige `Title`, met `variants` en (bij series) `seasons`. Series worden server-side lazy geladen en gecachet. Alle `StreamVariant.url` zijn **play-urls** (zie onder). Plus `similar: TitleCard[]` (max. 20). |
-| `GET /v1/catalog/search` | Query `?q=&limit=&kids=1`. Geeft `{ query, total, movies: TitleCard[], series: TitleCard[], people: { name, titles: TitleCard[] }[], channels: ChannelCard[], genres: {slug,name}[], akas: Record<id,string> }`. |
-| `POST /v1/catalog/recommend` | Body `{ history: string[], favorites: string[], limit?, kids? }`. Geeft `{ items: TitleCard[] }`. |
-| `GET /v1/catalog/channels` | Query `?group=&lang=&kids=1`. Geeft `{ items: Channel[] }`. Varianten met play-urls; geen EPG. `ChannelCard` = `Channel` zonder `variants` (alleen `variantCount`). |
-| `GET /v1/catalog/epg` | Query `?channels=<epgId,…>&from=<ms>&to=<ms>` (max. 50 zenders en 48 uur). Geeft `Record<epgId, EpgProgramme[]>`. |
-| `GET /v1/catalog/nownext` | Query `?channels=<channelId,…>`. Geeft `Record<channelId, { now?, next? }>`. |
+| Methode en pad               | Wat                                                                                                                                                                                                                                                               |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/sources`            | Bronnen van het account, zonder secrets: `{ id, type, name, enabled, serverUrl?, username?, playlistUrl?(gemaskeerd), epgUrl?, addedAt, lastSyncAt?, lastError?, stats?, account? }[]`. De ingebouwde demo-bron (`sample`) staat erbij en is aan/uit te zetten.   |
+| `POST /v1/sources/test`      | Body: `{ type, serverUrl?, username?, password?, playlistUrl?, epgUrl? }`. Test zonder op te slaan. Geeft `{ ok, movies, series, channels, expiresAt?, status?, warnings? }` of `{ ok:false, code, message }`.                                                    |
+| `POST /v1/sources`           | Dezelfde body plus `name`. Slaat op (wachtwoord versleuteld) en start een refresh. Geeft de bron terug.                                                                                                                                                           |
+| `PATCH /v1/sources/:id`      | Naam, enabled, urls of een nieuw wachtwoord wijzigen.                                                                                                                                                                                                             |
+| `DELETE /v1/sources/:id`     | Verwijdert de bron, zijn cache en zijn secrets.                                                                                                                                                                                                                   |
+| `POST /v1/catalog/refresh`   | Body `{ force?: boolean, sourceId?: string }`. Zet een refresh in de wachtrij. Geeft `202` met de status.                                                                                                                                                         |
+| `GET /v1/catalog/meta`       | `{ builtAt, status: 'empty'\|'building'\|'ready'\|'error', progress?, error?, counts: { movies, series, channels, programmes }, genres: { slug, name, count }[], languages: { lang, count }[], groups: { name, count }[] }`                                       |
+| `GET /v1/catalog/home`       | Query `?kids=1&limit=20`. Geeft `{ featured: TitleCard[], recent, popularMovies, trendingSeries, genres: {slug,name,count}[], live: ChannelCard[] }`. Persoonlijke rijen (verder kijken, mijn lijst, aanbevolen) vult de client met `ids=`- en `recommend`-calls. |
+| `GET /v1/catalog/titles`     | Query `?kind=movie\|series&genre=<slug>&lang=<code>&sort=popular\|new\|az\|year&kids=1&limit=60&cursor=<opaque>` of `?ids=a,b,c` (max. 100). Geeft `{ items: TitleCard[], nextCursor?: string, total }`.                                                          |
+| `GET /v1/catalog/titles/:id` | De volledige `Title`, met `variants` en (bij series) `seasons`. Series worden server-side lazy geladen en gecachet. Alle `StreamVariant.url` zijn **play-urls** (zie onder). Plus `similar: TitleCard[]` (max. 20).                                               |
+| `GET /v1/catalog/search`     | Query `?q=&limit=&kids=1`. Geeft `{ query, total, movies: TitleCard[], series: TitleCard[], people: { name, titles: TitleCard[] }[], channels: ChannelCard[], genres: {slug,name}[], akas: Record<id,string> }`.                                                  |
+| `POST /v1/catalog/recommend` | Body `{ history: string[], favorites: string[], limit?, kids? }`. Geeft `{ items: TitleCard[] }`.                                                                                                                                                                 |
+| `GET /v1/catalog/channels`   | Query `?group=&lang=&kids=1`. Geeft `{ items: Channel[] }`. Varianten met play-urls; geen EPG. `ChannelCard` = `Channel` zonder `variants` (alleen `variantCount`).                                                                                               |
+| `GET /v1/catalog/epg`        | Query `?channels=<epgId,…>&from=<ms>&to=<ms>` (max. 50 zenders en 48 uur). Geeft `Record<epgId, EpgProgramme[]>`.                                                                                                                                                 |
+| `GET /v1/catalog/nownext`    | Query `?channels=<channelId,…>`. Geeft `Record<channelId, { now?, next? }>`.                                                                                                                                                                                      |
 
 ### Play-urls (geen inloggegevens op apparaten)
 
@@ -85,17 +104,20 @@ type TitleCard = Pick<Title, 'id'|'kind'|'title'|'originalTitle'|'year'|'genres'
 De gebruiker wil dat synchroniseren "gewoon" werkt via deze app en deze server: **één account met e-mail en wachtwoord**. Je logt op elk apparaat in en alles synchroniseert. Er is geen losse sync-server-url of wachtwoordzin; de backend-url zit vast in de build.
 
 **Zero-knowledge-login** (zoals Bitwarden en 1Password):
+
 - De client vraagt `POST /v1/auth/prelogin { email }` op en krijgt `{ salt, iterations }`. Voor onbekende e-mails komt er een deterministische nep-salt terug (HMAC van de e-mail met een serversleutel), zodat niet te zien is welke accounts bestaan.
 - `masterKey = PBKDF2-SHA256(wachtwoord, salt, ≥ 600.000)`. Daaruit volgen via HKDF `authKey` (32 bytes) en de E2E-sleutels (`encKey` en `macKey`, zoals nu in src/lib/sync/crypto.ts).
 - De client stuurt alleen `authKey` (base64) mee. De server bewaart `scrypt(authKey, serverSalt)` en ziet dus nooit het wachtwoord of de E2E-sleutel.
 
 **Endpoints:**
+
 - `POST /v1/auth/register { email, authKey, salt, iterations, signupCode, deviceName }` geeft `{ accountId, token, deviceId }`. Alleen met een geldige `SIGNUP_CODE` (uitnodigingscode).
 - `POST /v1/auth/login { email, authKey, deviceName }` geeft `{ accountId, token, deviceId }`. Er zit een rate-limit en lockout per e-mail en per IP op. De fout is altijd generiek: "e-mail of wachtwoord onjuist".
 - `POST /v1/auth/logout` trekt het token van dit apparaat in. De bestaande `/v1/devices`-endpoints blijven voor het apparatenoverzicht en het afmelden van een apparaat.
 - `POST /v1/auth/password { oldAuthKey, newAuthKey, newSalt, newIterations }`: wachtwoord wijzigen. De client versleutelt eerst alle E2E-docs opnieuw met de nieuwe sleutel.
 
 **Tv-login** (Apple TV, Android TV, en alles zonder fijn toetsenbord), apparaat-flow met overdracht van de E2E-sleutel:
+
 1. De tv maakt een ECDH P-256-sleutelpaar en roept `POST /v1/auth/device-code { publicKey, deviceName }` aan. Hij krijgt `{ userCode: 'ABCD-1234', deviceCode, verifyUrl: 'https://prismastream.patrickudo.nl/activate', expiresIn: 600, interval: 3 }`.
 2. De tv toont de code (plus een QR-code van `verifyUrl?code=…`). De gebruiker opent die url op een ingelogd apparaat, of kiest in de app "Tv koppelen", en voert de code in.
 3. Het ingelogde apparaat haalt `GET /v1/auth/device-code/:userCode` op (geeft `{ deviceName, publicKey }`), versleutelt de E2E-`masterKey` met ECDH (eigen ephemeral key) + HKDF + AES-GCM naar de publieke sleutel van de tv, en stuurt `POST /v1/auth/device-code/:userCode/approve { sealedKey, ephemeralPublicKey }`.

@@ -13,14 +13,7 @@
 	import { hashString } from '#lib/components/art.ts';
 	import { bestQuality, tn } from '#lib/components/format.ts';
 	import ChannelLogo from './ChannelLogo.svelte';
-	import {
-		formatTime,
-		formatTimeRange,
-		minutesLeft,
-		nowNext,
-		progressAt,
-		sourceCount
-	} from './epg.ts';
+	import { formatTime, formatTimeRange, minutesLeft, progressAt, sourceCount } from './epg.ts';
 	import { shortEpg } from './live.svelte.ts';
 	import { liveHref } from '#lib/components/links.ts';
 
@@ -34,7 +27,7 @@
 
 	let { channel, now, kind, onsources, oninfo }: Props = $props();
 
-	const nn = $derived(nowNext(shortEpg.programmes(channel), now));
+	const nn = $derived(shortEpg.nowNext(channel, now));
 	const fav = $derived(user.isFavoriteChannel(channel.id));
 	const hue = $derived(hashString(channel.id) % 360);
 	const quality = $derived(bestQuality(channel.variants.map((v) => v.quality)));

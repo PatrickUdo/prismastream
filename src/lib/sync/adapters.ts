@@ -1,6 +1,7 @@
 // Adapter between the sync engine and the sources module (IPTV accounts + their secrets).
 // The engine only talks to this interface, so the sources module can evolve independently.
-// The default implementation (sources-adapter.svelte.ts) is registered by initSync().
+// The default implementation (sources-adapter.svelte.ts) is registered by setSourcesSync(true)
+// in local mode only (the catalog library decides; see #lib/catalog/library.svelte.ts).
 import type { SourceConfig } from '#lib/types.ts';
 
 export interface SourcesSyncAdapter {

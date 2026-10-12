@@ -111,7 +111,7 @@
 
 	// Ask for short EPG of visible channels without a guide (Xtream only; no-op otherwise).
 	$effect(() => {
-		for (const r of rows) shortEpg.request(r.channel);
+		for (const r of rows) shortEpg.request(r.channel, winFrom, winTo);
 	});
 
 	// ---- scrolling -------------------------------------------------------------------------

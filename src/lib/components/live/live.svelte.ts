@@ -5,9 +5,10 @@ import { createSubscriber, SvelteMap } from 'svelte/reactivity';
 import type { IconName } from '#lib/components/Icon.svelte';
 import type { Channel, EpgProgramme } from '#lib/types.ts';
 import { catalog } from '#lib/stores/catalog.svelte.ts';
+import { library } from '#lib/catalog/library.svelte.ts';
 import { loadShortEpg, sourceName, sources } from '#lib/sources/index.svelte.ts';
-import { SAMPLE_SOURCE_NAMES } from '#lib/sample/index.ts';
-import { MINUTE, programmesOf } from './epg.ts';
+import { SAMPLE_SOURCE_NAMES } from '#lib/sample/meta.ts';
+import { MINUTE, nowNext, programmesOf } from './epg.ts';
 
 // ---------------------------------------------------------------------------
 // Clock: ticks on every minute boundary while something reads it.
@@ -61,21 +62,40 @@ class ShortEpgCache {
 	#queue: Channel[] = [];
 	#active = 0;
 
-	/** Programmes for a channel: the catalog guide, else the short EPG once loaded. */
+	/**
+	 * Programmes for a channel: the catalog guide, else the short EPG once loaded.
+	 * Remote mode: the guide loaded from the backend so far (see request()).
+	 */
 	programmes = (channel: Channel): readonly EpgProgramme[] => {
+		if (library.mode === 'remote') return library.programmes(channel);
 		const list = programmesOf(channel, catalog.epg);
 		if (list.length) return list;
 		return this.#lists.get(channel.id) ?? NONE;
 	};
 
-	/** Fetch the short EPG for channels without a guide (Xtream only, deduplicated). */
-	request(channel: Channel) {
+	/**
+	 * Local: fetch the short EPG for channels without a guide (Xtream only, deduplicated).
+	 * Remote: load the guide of the channel for [from, to) (default: around now).
+	 */
+	request(channel: Channel, from?: number, to?: number) {
+		if (library.mode === 'remote') return library.requestEpg(channel, from, to);
 		if (this.#requested.has(channel.id)) return;
 		this.#requested.add(channel.id);
 		if (programmesOf(channel, catalog.epg).length) return;
 		if (!channel.variants.some((v) => sources.get(v.sourceId)?.type === 'xtream')) return;
 		this.#queue.push(channel);
 		this.#pump();
+	}
+
+	/** Now and next for a channel (remote: loaded guide, else the batched /nownext). */
+	nowNext = (channel: Channel, at: number) =>
+		library.mode === 'remote'
+			? library.nowNext(channel, at)
+			: nowNext(this.programmes(channel), at);
+
+	/** A list row: local short EPG; remote rows only use now/next (no guide per row). */
+	requestRow(channel: Channel) {
+		if (library.mode !== 'remote') this.request(channel);
 	}
 
 	#pump() {

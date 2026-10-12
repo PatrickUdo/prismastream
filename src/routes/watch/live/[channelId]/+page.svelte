@@ -5,7 +5,8 @@
 	import { afterNavigate } from '$app/navigation';
 	import type { Channel, LangCode, StreamVariant } from '#lib/types.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import { playableVariant } from '#lib/player/play-url.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import { PlayerEngine } from '#lib/player/engine.svelte.ts';
@@ -29,8 +30,9 @@
 	const channelId = $derived(page.params.channelId ?? '');
 	const variantParam = $derived(page.url.searchParams.get('v'));
 	// Kids mode: only kids channels in the list and the zap order, and no direct url access.
-	const channels = $derived(kids.visibleChannels);
-	const channel = $derived(catalog.getChannel(channelId));
+	const channels = $derived(library.channels);
+	const channel = $derived(library.getChannel(channelId));
+	$effect(() => library.ensureChannels());
 	const blocked = $derived(!!channel && !kids.isChannelAllowed(channel));
 
 	const prefs = $derived({
@@ -52,8 +54,10 @@
 	const status = $derived.by(() => {
 		if (!user.ready) return 'loading';
 		if (!channel) {
-			if (catalog.status === 'error') return 'catalog-error';
-			return catalog.status === 'ready' ? 'not-found' : 'loading';
+			if (!library.initialized || library.channelsLoading || library.status === 'loading')
+				return 'loading';
+			if (library.channelsError || library.status === 'error') return 'catalog-error';
+			return 'not-found';
 		}
 		if (blocked) return 'kids-blocked';
 		return current ? 'ready' : 'no-variants';
@@ -89,6 +93,7 @@
 		engine.load({
 			url: v.url,
 			containerExt: v.containerExt,
+			altUrls: v.altUrls,
 			live: true,
 			pickAudio: (tracks) =>
 				chooseAudioTrack(tracks, [
@@ -118,7 +123,7 @@
 		}
 		if (status !== 'ready' || !channel || !current) return;
 		const ch = channel;
-		const v = current;
+		const v = playableVariant(current);
 		untrack(() => start(ch, v));
 	});
 
@@ -175,7 +180,7 @@
 	// ---- presentation ------------------------------------------------------------
 
 	const shownChannel = $derived(zapTarget ?? channel);
-	const nn = $derived(shownChannel ? catalog.nowNext(shownChannel, now) : {});
+	const nn = $derived(shownChannel ? library.nowNext(shownChannel, now) : {});
 	const progress = $derived(
 		nn.now
 			? Math.min(100, ((now - nn.now.start) / Math.max(1, nn.now.stop - nn.now.start)) * 100)
@@ -282,7 +287,9 @@
 		kind={status === 'kids-blocked' ? 'blocked' : 'error'}
 		detail={status === 'kids-blocked' ? t('player.kidsChannelBlocked') : undefined}
 		onBack={() => leave('/live')}
-		onRetry={status === 'catalog-error' ? () => catalog.refresh() : undefined}
+		onRetry={status === 'catalog-error'
+			? () => (library.mode === 'remote' ? library.ensureChannels(true) : library.refresh())
+			: undefined}
 	/>
 {/if}
 

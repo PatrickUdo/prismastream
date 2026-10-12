@@ -1,70 +1,72 @@
 <!--
-	Settings → Sync: set up end-to-end encrypted sync, link devices with a one-time code,
-	show status and turn sync off. The passphrase only lives in this component while a form
-	is open; it is handed to the sync engine for key derivation and never stored.
+	Settings → Account (PrismaStream Cloud): log in or create an account with e-mail and password
+	(zero-knowledge: the server only sees a derived authKey; the E2E keys stay on the device),
+	tv login with a code, devices, change password, log out. The backend url is fixed in the
+	build and only changeable under "Geavanceerd".
 -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { page } from '$app/state';
 	import { t, i18n } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { syncEngine, SyncFailure, defaultDeviceName, initSync } from '#lib/sync/index.ts';
 	import type { DeviceInfo } from '#lib/sync/api.ts';
 	import { isInsecureUrl, normalizeServerUrl } from '#lib/sync/api.ts';
-	import {
-		generatePassphrase,
-		passphraseStrength,
-		MIN_PASSPHRASE_LENGTH
-	} from '#lib/sync/crypto.ts';
+	import { passwordStrength } from '#lib/sync/crypto.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import { DEFAULT_BACKEND_URL } from '#lib/backend/config.ts';
+	import { inputMode } from '#lib/tv/mode.svelte.ts';
 	import Button from '#lib/components/Button.svelte';
 	import Icon from '#lib/components/Icon.svelte';
+	import PasswordField from '#lib/components/account/PasswordField.svelte';
+	import TvLogin from '#lib/components/account/TvLogin.svelte';
+	import { path } from '#lib/components/links.ts';
+	import { kids } from '#lib/stores/kids.svelte.ts';
+	import KidsLock from '#lib/components/KidsLock.svelte';
 
-	type Mode = 'new' | 'pair';
+	type Tab = 'login' | 'register' | 'tv';
 
-	let mode = $state<Mode>('new');
-	let serverUrl = $state(user.settings.syncServerUrl ?? '');
-	let deviceName = $state(defaultDeviceName());
-	let passphrase = $state('');
-	let confirmPass = $state('');
-	let savedAck = $state(false);
-	let showPass = $state(false);
-	let code = $state('');
+	let tab = $state<Tab>(
+		inputMode.tv ? 'tv' : page.url.searchParams.get('tab') === 'register' ? 'register' : 'login'
+	);
+	let email = $state('');
+	let password = $state('');
+	let password2 = $state('');
+	let signupCode = $state('');
 	let unlockPass = $state('');
+	let oldPass = $state('');
+	let newPass = $state('');
+	let newPass2 = $state('');
+	let changeOpen = $state(false);
+	let confirmLogout = $state(false);
 
 	let busy = $state(false);
 	let formError = $state<string | null>(null);
 	let notice = $state<string | null>(null);
 
-	let pairing = $state<{ code: string; expiresAt: number } | null>(null);
-	let now = $state(Date.now());
 	let devices = $state<DeviceInfo[] | null>(null);
 	let devicesBusy = $state(false);
-	let confirming = $state<'unlink' | 'delete' | null>(null);
-	let confirmBox = $state<HTMLElement>();
+	let now = $state(Date.now());
+	const tick = setInterval(() => (now = Date.now()), 30_000);
+	onDestroy(() => clearInterval(tick));
 
-	// Bring the confirmation into view (it can be triggered from the device list).
-	$effect(() => {
-		if (confirming && confirmBox) {
-			confirmBox.scrollIntoView({ block: 'center', behavior: 'smooth' });
-			confirmBox.focus({ preventScroll: true });
-		}
-	});
-
-	const strength = $derived(passphraseStrength(passphrase));
-	const insecure = $derived(isInsecureUrl(serverUrl.trim()));
-	const configured = $derived(syncEngine.configured);
-
-	// initSync() is idempotent; calling it here keeps this page working even before the
-	// app shell starts sync.
+	// Keeps this page working even before the app shell started sync (idempotent).
 	$effect(() => {
 		void initSync();
 	});
 
-	const tick = setInterval(() => (now = Date.now()), 1000);
-	onDestroy(() => clearInterval(tick));
-
-	$effect(() => {
-		if (!serverUrl && user.settings.syncServerUrl) serverUrl = user.settings.syncServerUrl;
-	});
+	const configured = $derived(syncEngine.configured);
+	const serverUrl = $derived(library.backendUrl ?? '');
+	const strength = $derived(passwordStrength(password));
+	const newStrength = $derived(passwordStrength(newPass));
+	const passwordAccount = $derived(syncEngine.authMode === 'password');
+	/** The key does not fit any more (password changed elsewhere) or is missing. */
+	const needsPassword = $derived(
+		configured &&
+			passwordAccount &&
+			(syncEngine.locked || syncEngine.error === 'decrypt' || syncEngine.error === 'wrongPassword')
+	);
+	const loggedOut = $derived(configured && syncEngine.error === 'unauthorized');
 
 	function errorText(err: unknown): string {
 		if (err instanceof SyncFailure) return t('sync.error.' + err.code);
@@ -82,47 +84,37 @@
 		return rtf.format(Math.round(diff / 86400), 'day');
 	}
 
-	function countdown(expiresAt: number): string {
-		const s = Math.max(0, Math.round((expiresAt - now) / 1000));
-		return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-	}
-
-	function formatCode(c: string): string {
-		return c.length === 8 ? `${c.slice(0, 4)}-${c.slice(4)}` : c;
-	}
-
-	function resetSecrets() {
-		passphrase = '';
-		confirmPass = '';
+	function reset() {
+		password = '';
+		password2 = '';
 		unlockPass = '';
-		code = '';
-		savedAck = false;
-		showPass = false;
+		oldPass = '';
+		newPass = '';
+		newPass2 = '';
 	}
 
-	function checkUrl(): string | null {
-		const url = normalizeServerUrl(serverUrl);
-		if (!url) {
-			formError = t('sync.error.invalidUrl');
+	function requireServer(): string | null {
+		if (!serverUrl) {
+			formError = t('account.noServer');
 			return null;
 		}
-		return url;
+		return serverUrl;
 	}
 
-	async function createAccount(e: SubmitEvent) {
+	const validEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+
+	async function submitLogin(e: SubmitEvent) {
 		e.preventDefault();
-		formError = null;
-		notice = null;
-		const url = checkUrl();
+		formError = notice = null;
+		const url = requireServer();
 		if (!url) return;
-		if (!strength.acceptable) return void (formError = t('sync.passphrase.tooWeak'));
-		if (passphrase !== confirmPass) return void (formError = t('sync.passphrase.mismatch'));
-		if (!savedAck) return void (formError = t('sync.passphrase.savedRequired'));
+		if (!validEmail(email)) return void (formError = t('sync.error.invalidEmail'));
+		if (!password) return void (formError = t('sync.error.invalidLogin'));
 		busy = true;
 		try {
-			await syncEngine.createAccount(url, passphrase, deviceName.trim() || defaultDeviceName());
-			resetSecrets();
-			notice = t('sync.done.created');
+			await syncEngine.login(url, email, password, defaultDeviceName());
+			reset();
+			notice = t('account.done.login');
 		} catch (err) {
 			formError = errorText(err);
 		} finally {
@@ -130,26 +122,21 @@
 		}
 	}
 
-	async function pairDevice(e: SubmitEvent) {
+	async function submitRegister(e: SubmitEvent) {
 		e.preventDefault();
-		formError = null;
-		notice = null;
-		const url = checkUrl();
+		formError = notice = null;
+		const url = requireServer();
 		if (!url) return;
-		const clean = code.toUpperCase().replace(/[\s-]/g, '');
-		if (clean.length !== 8) return void (formError = t('sync.code.invalid'));
-		if (!passphrase) return void (formError = t('sync.passphrase.tooWeak'));
+		if (!validEmail(email)) return void (formError = t('sync.error.invalidEmail'));
+		if (!strength.acceptable) return void (formError = t('account.password.tooWeak'));
+		if (password !== password2) return void (formError = t('account.password.mismatch'));
+		if (!signupCode.trim()) return void (formError = t('account.signupCode.required'));
 		busy = true;
 		try {
-			const ok = await syncEngine.pairDevice(
-				url,
-				clean,
-				passphrase,
-				deviceName.trim() || defaultDeviceName()
-			);
-			resetSecrets();
-			if (ok) notice = t('sync.done.paired');
-			else formError = t('sync.error.wrongPassphrase');
+			await syncEngine.register(url, email, password, signupCode, defaultDeviceName());
+			reset();
+			signupCode = '';
+			notice = t('account.done.register');
 		} catch (err) {
 			formError = errorText(err);
 		} finally {
@@ -157,14 +144,19 @@
 		}
 	}
 
-	async function unlock(e: SubmitEvent) {
+	async function submitUnlock(e: SubmitEvent) {
 		e.preventDefault();
 		formError = null;
 		busy = true;
 		try {
-			const ok = await syncEngine.unlock(unlockPass);
-			if (ok) resetSecrets();
-			else formError = t('sync.error.wrongPassphrase');
+			const ok = passwordAccount
+				? await syncEngine.unlockWithPassword(unlockPass)
+				: await syncEngine.unlock(unlockPass);
+			if (ok) {
+				reset();
+				notice = t('account.done.unlocked');
+			} else
+				formError = t(passwordAccount ? 'sync.error.wrongPassword' : 'sync.error.wrongPassphrase');
 		} catch (err) {
 			formError = errorText(err);
 		} finally {
@@ -172,11 +164,32 @@
 		}
 	}
 
-	async function makeCode() {
+	async function submitChange(e: SubmitEvent) {
+		e.preventDefault();
+		formError = notice = null;
+		if (!newStrength.acceptable) return void (formError = t('account.password.tooWeak'));
+		if (newPass !== newPass2) return void (formError = t('account.password.mismatch'));
+		busy = true;
+		try {
+			await syncEngine.changePassword(oldPass, newPass);
+			reset();
+			changeOpen = false;
+			notice = t('account.done.passwordChanged');
+		} catch (err) {
+			formError = errorText(err);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function logout() {
 		formError = null;
 		busy = true;
 		try {
-			pairing = await syncEngine.createPairingCode();
+			await syncEngine.logout();
+			confirmLogout = false;
+			devices = null;
+			notice = t('account.done.logout');
 		} catch (err) {
 			formError = errorText(err);
 		} finally {
@@ -198,7 +211,7 @@
 
 	async function removeDevice(d: DeviceInfo) {
 		if (d.current) {
-			confirming = 'unlink';
+			confirmLogout = true;
 			return;
 		}
 		devicesBusy = true;
@@ -213,367 +226,204 @@
 		}
 	}
 
-	async function disable(kind: 'unlink' | 'delete') {
+	// ---- advanced: backend url ---------------------------------------------------------
+	let advanced = $state(user.settings.syncServerUrl ?? '');
+	let advancedSaved = $state(false);
+	const advancedInsecure = $derived(isInsecureUrl(advanced.trim()));
+	async function saveAdvanced(e: SubmitEvent) {
+		e.preventDefault();
 		formError = null;
-		busy = true;
-		try {
-			await syncEngine.disable(kind === 'delete' ? 'deleteAccount' : 'unlink');
-			confirming = null;
-			pairing = null;
-			devices = null;
-			notice = t('sync.disable.done');
-		} catch (err) {
-			formError = errorText(err);
-		} finally {
-			busy = false;
-		}
-	}
-
-	function suggest() {
-		passphrase = generatePassphrase();
-		confirmPass = '';
-		showPass = true;
+		const v = advanced.trim();
+		if (v && !normalizeServerUrl(v)) return void (formError = t('sync.error.invalidUrl'));
+		await user.updateSettings({
+			syncServerUrl: v ? (normalizeServerUrl(v) ?? undefined) : undefined
+		});
+		advancedSaved = true;
 	}
 
 	const statusText = $derived(t('sync.status.' + syncEngine.status));
-	const engineError = $derived(
-		syncEngine.error && syncEngine.status !== 'idle' ? t('sync.error.' + syncEngine.error) : null
-	);
-	const codeExpired = $derived(pairing ? pairing.expiresAt <= now : false);
 </script>
 
 <svelte:head>
-	<title>{t('sync.title')} · PrismaStream</title>
+	<title>{t('account.title')} · PrismaStream</title>
 </svelte:head>
 
-<div class="page sync">
-	<header class="head">
-		<p class="eyebrow">{t('sync.eyebrow')}</p>
-		<h1>{t('sync.title')}</h1>
-		<p class="lead">{t('sync.intro')}</p>
-	</header>
+{#if kids.restricted}
+	<KidsLock />
+{:else}
+	<div class="page account">
+		<header class="head">
+			<p class="eyebrow">{t('account.eyebrow')}</p>
+			<h1>{t('account.title')}</h1>
+			<p class="lead">{configured ? t('account.leadIn') : t('account.lead')}</p>
+		</header>
 
-	<section class="panel glass e2e" aria-labelledby="e2e-title">
-		<div class="e2e-icon" aria-hidden="true">
-			<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor"
-				><rect x="4.5" y="10.5" width="15" height="10" rx="2.5" stroke-width="1.8" /><path
-					d="M8 10.5V7.5a4 4 0 0 1 8 0v3"
-					stroke-width="1.8"
-					stroke-linecap="round"
-				/></svg
-			>
+		<div class="live" aria-live="polite">
+			{#if notice}<p class="notice"><Icon name="check" size="1.1rem" /> {notice}</p>{/if}
+			{#if formError}<p class="error" role="alert">
+					<Icon name="alert" size="1.1rem" />
+					{formError}
+				</p>{/if}
 		</div>
-		<div>
-			<h2 id="e2e-title">{t('sync.e2e.title')}</h2>
-			<p>{t('sync.e2e.body')}</p>
-			<p class="muted">{t('sync.e2e.warning')}</p>
-		</div>
-	</section>
 
-	<div class="live" aria-live="polite">
-		{#if notice}
-			<p class="notice"><Icon name="check" size="1.1rem" /> {notice}</p>
-		{/if}
-		{#if formError}
-			<p class="error" role="alert"><Icon name="alert" size="1.1rem" /> {formError}</p>
-		{/if}
-	</div>
-
-	{#if !configured}
-		<section class="panel glass" aria-labelledby="setup-title">
-			<h2 id="setup-title">{t('sync.setup.choose')}</h2>
-
-			<div class="field">
-				<label for="sync-server">{t('sync.server.label')}</label>
-				<input
-					id="sync-server"
-					type="url"
-					inputmode="url"
-					autocomplete="url"
-					autocapitalize="off"
-					spellcheck="false"
-					placeholder="https://"
-					bind:value={serverUrl}
-					aria-describedby="sync-server-hint"
-					data-focusable
-				/>
-				<p id="sync-server-hint" class="hint">{t('sync.server.hint')}</p>
-				{#if insecure}
-					<p class="warn"><Icon name="alert" size="1rem" /> {t('sync.server.insecure')}</p>
-				{/if}
-			</div>
-
-			<div class="modes" role="radiogroup" aria-label={t('sync.setup.choose')}>
-				<button
-					type="button"
-					role="radio"
-					aria-checked={mode === 'new'}
-					class="mode"
-					class:active={mode === 'new'}
-					onclick={() => ((mode = 'new'), (formError = null))}
-					data-focusable
-				>
-					<span class="mode-title"><Icon name="sparkle" size="1.1rem" /> {t('sync.new.title')}</span
-					>
-					<span class="mode-desc">{t('sync.new.desc')}</span>
-				</button>
-				<button
-					type="button"
-					role="radio"
-					aria-checked={mode === 'pair'}
-					class="mode"
-					class:active={mode === 'pair'}
-					onclick={() => ((mode = 'pair'), (formError = null))}
-					data-focusable
-				>
-					<span class="mode-title"
-						><Icon name="monitor" size="1.1rem" /> {t('sync.pair.title')}</span
-					>
-					<span class="mode-desc">{t('sync.pair.desc')}</span>
-				</button>
-			</div>
-
-			{#if mode === 'new'}
-				<form class="form" onsubmit={createAccount} novalidate>
-					<div class="field">
-						<label for="sync-device">{t('sync.deviceName')}</label>
-						<input
-							id="sync-device"
-							type="text"
-							maxlength="64"
-							bind:value={deviceName}
+		{#if !configured}
+			<section class="panel glass">
+				<div class="tabs" role="tablist" aria-label={t('account.title')}>
+					{#each [['login', t('account.tab.login')], ['register', t('account.tab.register')], ['tv', t('account.tab.tv')]] as [id, label] (id)}
+						<button
+							type="button"
+							role="tab"
+							aria-selected={tab === id}
+							class:active={tab === id}
+							onclick={() => ((tab = id as Tab), (formError = null))}
 							data-focusable
-						/>
-					</div>
+						>
+							{label}
+						</button>
+					{/each}
+				</div>
 
-					<div class="field">
-						<div class="label-row">
-							<label for="sync-pass">{t('sync.passphrase.label')}</label>
-							<button type="button" class="link" onclick={suggest} data-focusable>
-								{t('sync.passphrase.generate')}
-							</button>
-						</div>
-						<div class="pass">
+				{#if !serverUrl}
+					<p class="warn"><Icon name="alert" size="1rem" /> {t('account.noServer')}</p>
+				{:else if tab === 'tv'}
+					<TvLogin {serverUrl} ondone={() => (notice = t('account.done.login'))} />
+				{:else}
+					<form class="form" onsubmit={tab === 'login' ? submitLogin : submitRegister} novalidate>
+						<div class="field">
+							<label for="acc-email">{t('account.email')}</label>
 							<input
-								id="sync-pass"
-								type={showPass ? 'text' : 'password'}
+								id="acc-email"
+								type="email"
+								inputmode="email"
+								autocomplete={tab === 'login' ? 'username' : 'email'}
+								autocapitalize="off"
+								spellcheck="false"
+								bind:value={email}
+								data-focusable
+							/>
+						</div>
+						<PasswordField
+							id="acc-pass"
+							label={t('account.password')}
+							bind:value={password}
+							autocomplete={tab === 'login' ? 'current-password' : 'new-password'}
+							meter={tab === 'register'}
+						/>
+						{#if tab === 'register'}
+							<PasswordField
+								id="acc-pass2"
+								label={t('account.passwordConfirm')}
+								bind:value={password2}
 								autocomplete="new-password"
-								autocapitalize="off"
-								spellcheck="false"
-								minlength={MIN_PASSPHRASE_LENGTH}
-								bind:value={passphrase}
-								aria-describedby="sync-pass-hint sync-pass-strength"
-								data-focusable
 							/>
-							<button
-								type="button"
-								class="eye"
-								aria-pressed={showPass}
-								aria-label={showPass ? t('sync.passphrase.hide') : t('sync.passphrase.show')}
-								onclick={() => (showPass = !showPass)}
-								data-focusable
-							>
-								{showPass ? t('sync.passphrase.hideShort') : t('sync.passphrase.showShort')}
-							</button>
-						</div>
-						<div class="meter s{strength.score}" aria-hidden="true">
-							{#each [0, 1, 2, 3] as i (i)}
-								<span class:on={passphrase && strength.score > i}></span>
-							{/each}
-						</div>
-						<p id="sync-pass-strength" class="hint">
-							{passphrase
-								? t('sync.strength.label', { level: t('sync.strength.' + strength.score) })
-								: ''}
-						</p>
-						<p id="sync-pass-hint" class="hint">{t('sync.passphrase.hint')}</p>
-					</div>
-
-					<div class="field">
-						<label for="sync-pass2">{t('sync.passphrase.confirm')}</label>
-						<input
-							id="sync-pass2"
-							type={showPass ? 'text' : 'password'}
-							autocomplete="new-password"
-							autocapitalize="off"
-							spellcheck="false"
-							bind:value={confirmPass}
-							aria-invalid={confirmPass.length > 0 && confirmPass !== passphrase}
-							data-focusable
-						/>
-						{#if confirmPass && confirmPass !== passphrase}
-							<p class="hint bad">{t('sync.passphrase.mismatch')}</p>
+							<div class="field">
+								<label for="acc-code">{t('account.signupCode')}</label>
+								<input
+									id="acc-code"
+									type="text"
+									autocomplete="off"
+									autocapitalize="off"
+									spellcheck="false"
+									bind:value={signupCode}
+									aria-describedby="acc-code-hint"
+									data-focusable
+								/>
+								<p id="acc-code-hint" class="hint">{t('account.signupCode.hint')}</p>
+							</div>
+							<p class="hint">{t('account.password.e2e')}</p>
 						{/if}
-					</div>
-
-					<label class="check">
-						<input type="checkbox" bind:checked={savedAck} data-focusable />
-						<span>{t('sync.passphrase.saved')}</span>
-					</label>
-
-					<div class="actions">
-						<Button variant="primary" type="submit" disabled={busy} icon="check" data-focusable>
-							{busy ? t('sync.creating') : t('sync.create')}
-						</Button>
-					</div>
-				</form>
-			{:else}
-				<form class="form" onsubmit={pairDevice} novalidate>
-					<div class="field">
-						<label for="sync-code">{t('sync.code.label')}</label>
-						<input
-							id="sync-code"
-							class="code-input"
-							type="text"
-							inputmode="text"
-							autocomplete="one-time-code"
-							autocapitalize="characters"
-							spellcheck="false"
-							maxlength="9"
-							placeholder="ABCD-EFGH"
-							bind:value={code}
-							aria-describedby="sync-code-hint"
-							data-focusable
-						/>
-						<p id="sync-code-hint" class="hint">{t('sync.code.hint')}</p>
-					</div>
-					<div class="field">
-						<label for="sync-pass-pair">{t('sync.passphrase.label')}</label>
-						<div class="pass">
-							<input
-								id="sync-pass-pair"
-								type={showPass ? 'text' : 'password'}
-								autocomplete="current-password"
-								autocapitalize="off"
-								spellcheck="false"
-								bind:value={passphrase}
-								data-focusable
-							/>
-							<button
-								type="button"
-								class="eye"
-								aria-pressed={showPass}
-								aria-label={showPass ? t('sync.passphrase.hide') : t('sync.passphrase.show')}
-								onclick={() => (showPass = !showPass)}
-								data-focusable
-							>
-								{showPass ? t('sync.passphrase.hideShort') : t('sync.passphrase.showShort')}
-							</button>
+						<div class="actions">
+							<Button variant="primary" type="submit" disabled={busy} icon="check" data-focusable>
+								{#if tab === 'login'}
+									{busy ? t('account.loggingIn') : t('account.loginAction')}
+								{:else}
+									{busy ? t('account.creating') : t('account.registerAction')}
+								{/if}
+							</Button>
 						</div>
-					</div>
-					<div class="field">
-						<label for="sync-device-pair">{t('sync.deviceName')}</label>
-						<input
-							id="sync-device-pair"
-							type="text"
-							maxlength="64"
-							bind:value={deviceName}
-							data-focusable
-						/>
-					</div>
-					<div class="actions">
-						<Button variant="primary" type="submit" disabled={busy} icon="check" data-focusable>
-							{busy ? t('sync.pairing') : t('sync.pairAction')}
-						</Button>
-					</div>
-				</form>
-			{/if}
-		</section>
-	{:else}
-		<section class="panel glass" aria-labelledby="status-title">
-			<div class="status-head">
-				<h2 id="status-title">{t('sync.status.title')}</h2>
-				<span class="badge {syncEngine.status}" role="status">
-					<span class="dot" aria-hidden="true"></span>{statusText}
-				</span>
-			</div>
-			<dl class="facts">
-				<div>
-					<dt>{t('sync.server')}</dt>
-					<dd class="mono">{syncEngine.serverUrl}</dd>
-				</div>
-				<div>
-					<dt>{t('sync.thisDevice')}</dt>
-					<dd>{syncEngine.deviceName}</dd>
-				</div>
-			</dl>
-			<p class="muted">
-				{syncEngine.lastSyncAt
-					? t('sync.lastSync', { time: relTime(syncEngine.lastSyncAt) })
-					: t('sync.never')}
-				{#if syncEngine.pending > 0}
-					· {t('sync.pending', { n: syncEngine.pending })}
+					</form>
 				{/if}
-			</p>
-			{#if engineError && !syncEngine.locked}
-				<p class="error"><Icon name="alert" size="1.1rem" /> {engineError}</p>
-			{/if}
-			{#if !syncEngine.locked}
-				<div class="actions">
-					<Button
-						icon="refresh"
-						disabled={syncEngine.status === 'syncing'}
-						onclick={() => void syncEngine.syncNow()}
-						data-focusable
-					>
-						{t('sync.syncNow')}
-					</Button>
-				</div>
-			{/if}
-		</section>
-
-		{#if syncEngine.locked}
-			<section class="panel glass" aria-labelledby="unlock-title">
-				<h2 id="unlock-title">{t('sync.unlock.title')}</h2>
-				<p class="muted">{t('sync.unlock.desc')}</p>
-				<form class="form" onsubmit={unlock}>
-					<div class="field">
-						<label for="sync-unlock">{t('sync.passphrase.label')}</label>
-						<input
-							id="sync-unlock"
-							type="password"
-							autocomplete="current-password"
-							autocapitalize="off"
-							spellcheck="false"
-							bind:value={unlockPass}
-							data-focusable
-						/>
-					</div>
-					<div class="actions">
-						<Button variant="primary" type="submit" disabled={busy || !unlockPass} data-focusable>
-							{busy ? t('sync.unlock.busy') : t('sync.unlock.action')}
-						</Button>
-					</div>
-				</form>
 			</section>
 		{:else}
-			<section class="panel glass" aria-labelledby="code-title">
-				<h2 id="code-title">{t('sync.code.title')}</h2>
-				<p class="muted">{t('sync.code.desc')}</p>
-				{#if pairing && !codeExpired}
-					<p
-						class="code"
-						aria-label={t('sync.code.aria', { code: pairing.code.split('').join(' ') })}
-					>
-						{formatCode(pairing.code)}
-					</p>
-					<p class="countdown" aria-live="off">
-						<Icon name="clock" size="1rem" />
-						{t('sync.code.expiresIn', { time: countdown(pairing.expiresAt) })}
-					</p>
-				{:else if pairing && codeExpired}
-					<p class="muted">{t('sync.code.expired')}</p>
-				{/if}
-				<div class="actions">
-					<Button icon="plus" disabled={busy} onclick={makeCode} data-focusable>
-						{pairing ? t('sync.code.new') : t('sync.code.create')}
-					</Button>
+			<section class="panel glass">
+				<div class="status-head">
+					<h2>{t('account.status')}</h2>
+					<span class="badge {syncEngine.status}" role="status">
+						<span class="dot" aria-hidden="true"></span>{statusText}
+					</span>
 				</div>
+				<dl class="facts">
+					<div>
+						<dt>{t('account.email')}</dt>
+						<dd>{syncEngine.email ?? t('account.legacy')}</dd>
+					</div>
+					<div>
+						<dt>{t('sync.thisDevice')}</dt>
+						<dd>{syncEngine.deviceName}</dd>
+					</div>
+				</dl>
+				<p class="muted">
+					{syncEngine.lastSyncAt
+						? t('sync.lastSync', { time: relTime(syncEngine.lastSyncAt) })
+						: t('sync.never')}
+					{#if syncEngine.pending > 0}· {t('sync.pending', { n: syncEngine.pending })}{/if}
+				</p>
+				{#if !needsPassword && !loggedOut}
+					<div class="actions">
+						<Button
+							icon="refresh"
+							disabled={syncEngine.status === 'syncing'}
+							onclick={() => void syncEngine.syncNow()}
+							data-focusable
+						>
+							{t('sync.syncNow')}
+						</Button>
+						{#if passwordAccount}
+							<Button icon="monitor" href={path('/activate')} data-focusable>
+								{t('account.tv.link')}
+							</Button>
+						{/if}
+					</div>
+				{/if}
 			</section>
 
-			<section class="panel glass" aria-labelledby="devices-title">
+			{#if loggedOut}
+				<section class="panel glass">
+					<h2>{t('account.loggedOut.title')}</h2>
+					<p class="muted">{t('account.loggedOut.body')}</p>
+					<div class="actions">
+						<Button
+							variant="primary"
+							onclick={() => void syncEngine.disable('local')}
+							data-focusable
+						>
+							{t('account.loggedOut.action')}
+						</Button>
+					</div>
+				</section>
+			{:else if needsPassword || syncEngine.locked}
+				<section class="panel glass">
+					<h2>{t('account.unlock.title')}</h2>
+					<p class="muted">{passwordAccount ? t('account.unlock.body') : t('sync.unlock.desc')}</p>
+					<form class="form" onsubmit={submitUnlock}>
+						<PasswordField
+							id="acc-unlock"
+							label={passwordAccount ? t('account.password') : t('sync.passphrase.label')}
+							bind:value={unlockPass}
+							autocomplete="current-password"
+						/>
+						<div class="actions">
+							<Button variant="primary" type="submit" disabled={busy || !unlockPass} data-focusable>
+								{busy ? t('sync.unlock.busy') : t('sync.unlock.action')}
+							</Button>
+						</div>
+					</form>
+				</section>
+			{/if}
+
+			<section class="panel glass">
 				<div class="status-head">
-					<h2 id="devices-title">{t('sync.devices.title')}</h2>
+					<h2>{t('sync.devices.title')}</h2>
 					<Button
 						variant="ghost"
 						size="s"
@@ -611,83 +461,144 @@
 					</ul>
 				{/if}
 			</section>
-		{/if}
 
-		<section class="panel glass" aria-labelledby="what-title">
-			<h2 id="what-title">{t('sync.what.title')}</h2>
-			<ul class="what">
-				{#each ['profiles', 'prefs', 'data', 'home', 'settings', 'sources'] as k (k)}
-					<li><Icon name="check" size="1rem" /> {t('sync.what.' + k)}</li>
-				{/each}
-			</ul>
-		</section>
+			{#if passwordAccount && !needsPassword && !loggedOut}
+				<section class="panel glass">
+					<div class="status-head">
+						<h2>{t('account.change.title')}</h2>
+						{#if !changeOpen}
+							<Button
+								variant="ghost"
+								size="s"
+								icon="key"
+								onclick={() => (changeOpen = true)}
+								data-focusable
+							>
+								{t('account.change.open')}
+							</Button>
+						{/if}
+					</div>
+					{#if changeOpen}
+						<form class="form" onsubmit={submitChange} novalidate>
+							<PasswordField
+								id="acc-old"
+								label={t('account.change.old')}
+								bind:value={oldPass}
+								autocomplete="current-password"
+							/>
+							<PasswordField
+								id="acc-new"
+								label={t('account.change.new')}
+								bind:value={newPass}
+								autocomplete="new-password"
+								meter
+							/>
+							<PasswordField
+								id="acc-new2"
+								label={t('account.passwordConfirm')}
+								bind:value={newPass2}
+								autocomplete="new-password"
+							/>
+							<p class="hint">{t('account.change.hint')}</p>
+							<div class="actions">
+								<Button variant="primary" type="submit" disabled={busy} data-focusable>
+									{busy ? t('account.change.busy') : t('account.change.action')}
+								</Button>
+								<Button
+									variant="ghost"
+									onclick={() => ((changeOpen = false), reset())}
+									data-focusable
+								>
+									{t('common.cancel')}
+								</Button>
+							</div>
+						</form>
+					{/if}
+				</section>
+			{/if}
 
-		<section class="panel glass danger" aria-labelledby="disable-title">
-			<h2 id="disable-title">{t('sync.disable.title')}</h2>
-			<p class="muted">{t('sync.disable.desc')}</p>
-			{#if confirming}
-				<div
-					class="confirm"
-					role="alertdialog"
-					aria-labelledby="confirm-text"
-					tabindex="-1"
-					bind:this={confirmBox}
-				>
-					<p id="confirm-text">
-						{confirming === 'delete'
-							? t('sync.disable.confirmDelete')
-							: t('sync.disable.confirmUnlink')}
-					</p>
+			<section class="panel glass">
+				<h2>{t('account.logout.title')}</h2>
+				<p class="muted">{t('account.logout.body')}</p>
+				{#if confirmLogout}
 					<div class="actions">
-						<Button
-							variant="primary"
-							class="danger-btn"
-							disabled={busy}
-							onclick={() => disable(confirming!)}
-							data-focusable
-						>
-							{t('sync.disable.confirm')}
+						<Button variant="primary" disabled={busy} onclick={logout} data-focusable>
+							{t('account.logout.confirm')}
 						</Button>
-						<Button variant="ghost" onclick={() => (confirming = null)} data-focusable>
+						<Button variant="ghost" onclick={() => (confirmLogout = false)} data-focusable>
 							{t('common.cancel')}
 						</Button>
 					</div>
-				</div>
-			{:else}
-				<div class="actions">
-					<Button onclick={() => (confirming = 'unlink')} data-focusable
-						>{t('sync.disable.unlink')}</Button
-					>
-					<Button
-						variant="ghost"
-						class="danger-text"
-						onclick={() => (confirming = 'delete')}
-						data-focusable
-					>
-						{t('sync.disable.delete')}
-					</Button>
-				</div>
-			{/if}
+				{:else}
+					<div class="actions">
+						<Button icon="close" onclick={() => (confirmLogout = true)} data-focusable>
+							{t('account.logout.action')}
+						</Button>
+					</div>
+				{/if}
+			</section>
+		{/if}
+
+		<section class="panel glass">
+			<h2>{t('sync.what.title')}</h2>
+			<ul class="what">
+				{#each ['profiles', 'prefs', 'data', 'home', 'settings'] as k (k)}
+					<li><Icon name="check" size="1rem" /> {t('sync.what.' + k)}</li>
+				{/each}
+				<li><Icon name="check" size="1rem" /> {t('account.what.sources')}</li>
+			</ul>
+			<p class="muted small">{t('account.e2e')}</p>
 		</section>
-	{/if}
-</div>
+
+		<details class="panel glass advanced">
+			<summary data-focusable>{t('account.advanced.title')}</summary>
+			<form class="form" onsubmit={saveAdvanced}>
+				<div class="field">
+					<label for="acc-server">{t('account.advanced.server')}</label>
+					<input
+						id="acc-server"
+						type="url"
+						inputmode="url"
+						autocapitalize="off"
+						spellcheck="false"
+						placeholder={DEFAULT_BACKEND_URL ?? 'https://'}
+						bind:value={advanced}
+						oninput={() => (advancedSaved = false)}
+						disabled={configured}
+						data-focusable
+					/>
+					<p class="hint">
+						{configured ? t('account.advanced.locked') : t('account.advanced.hint')}
+					</p>
+					{#if advancedInsecure}
+						<p class="warn"><Icon name="alert" size="1rem" /> {t('sync.server.insecure')}</p>
+					{/if}
+				</div>
+				{#if !configured}
+					<div class="actions">
+						<Button variant="glass" type="submit" data-focusable>{t('common.save')}</Button>
+						{#if advancedSaved}<span class="ok">{t('settings.saved')}</span>{/if}
+					</div>
+				{/if}
+			</form>
+		</details>
+	</div>
+{/if}
 
 <style>
-	.sync {
+	.account {
 		max-width: 52rem;
 		display: grid;
 		gap: 1.25rem;
 	}
 	.head h1 {
 		font-size: var(--text-2xl);
-		letter-spacing: var(--tracking-tight);
 		margin: 0.35rem 0 0.5rem;
 	}
 	.lead {
 		color: var(--text-2);
 		font-size: var(--text-l);
 		line-height: 1.5;
-		margin: 0;
 		max-width: 44rem;
 	}
 	.panel {
@@ -695,48 +606,18 @@
 		padding: clamp(1.1rem, 0.8rem + 1.2vw, 1.75rem);
 		display: grid;
 		gap: 0.9rem;
+		min-width: 0;
 	}
 	.panel h2 {
 		font-size: var(--text-l);
-		margin: 0;
-	}
-	.panel p {
-		margin: 0;
-		line-height: 1.55;
 	}
 	.muted,
 	.hint {
 		color: var(--text-3);
 	}
-	.hint {
+	.hint,
+	.small {
 		font-size: var(--text-s);
-	}
-	.e2e {
-		grid-template-columns: auto 1fr;
-		align-items: start;
-		gap: 1rem;
-		background: linear-gradient(135deg, var(--accent-faint), transparent 60%), var(--bg-glass);
-	}
-	.e2e > div {
-		display: grid;
-		gap: 0.5rem;
-	}
-	.e2e p {
-		color: var(--text-2);
-	}
-	.e2e .muted {
-		color: var(--text-3);
-		font-size: var(--text-s);
-	}
-	.e2e-icon {
-		width: 3rem;
-		height: 3rem;
-		border-radius: var(--radius-m);
-		display: grid;
-		place-items: center;
-		color: var(--accent-strong);
-		background: var(--accent-soft);
-		box-shadow: var(--glow);
 	}
 	.live:empty {
 		display: none;
@@ -749,8 +630,6 @@
 		align-items: flex-start;
 		border-radius: var(--radius-m);
 		padding: 0.75rem 0.9rem;
-		font-size: var(--text-m);
-		margin: 0;
 	}
 	.notice {
 		background: color-mix(in oklab, var(--success) 14%, transparent);
@@ -765,160 +644,73 @@
 		color: var(--rating);
 		font-size: var(--text-s);
 	}
-	.field {
-		display: grid;
-		gap: 0.4rem;
-	}
-	.field label,
-	.label-row label {
-		font-weight: 600;
-		font-size: var(--text-m);
-	}
-	.label-row {
+	.tabs {
 		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		gap: 1rem;
 		flex-wrap: wrap;
-	}
-	input[type='text'],
-	input[type='url'],
-	input[type='password'] {
-		width: 100%;
-		font: inherit;
-		color: var(--text);
-		background: var(--bg-elev-2);
-		border: 1px solid var(--line-strong);
-		border-radius: var(--radius-m);
-		padding: 0.8rem 0.95rem;
-		transition: border-color var(--dur-fast) var(--ease-out);
-	}
-	input:focus-visible {
-		border-color: var(--accent);
-	}
-	input[aria-invalid='true'] {
-		border-color: var(--danger);
-	}
-	.pass {
-		position: relative;
-	}
-	.pass input {
-		padding-right: 6.5rem;
-	}
-	.eye {
-		position: absolute;
-		right: 0.4rem;
-		top: 50%;
-		translate: 0 -50%;
-		min-width: 2.75rem;
-		height: 2.4rem;
-		padding: 0 0.7rem;
-		font-size: var(--text-s);
-		font-weight: 600;
-		border: 0;
-		border-radius: var(--radius-s);
-		background: transparent;
-		color: var(--text-2);
-		cursor: pointer;
-	}
-	.eye:hover {
-		background: var(--bg-hover);
-	}
-	.link {
-		border: 0;
-		background: none;
-		color: var(--accent-strong);
-		font-size: var(--text-s);
-		font-weight: 600;
-		cursor: pointer;
-		padding: 0.25rem 0;
-		border-radius: var(--radius-xs);
-	}
-	.meter {
-		display: grid;
-		grid-template-columns: repeat(4, 1fr);
-		gap: 0.3rem;
-	}
-	.meter span {
-		height: 0.3rem;
+		gap: 0.35rem;
+		padding: 0.3rem;
 		border-radius: var(--radius-pill);
-		background: var(--line-strong);
-		transition: background var(--dur) var(--ease-out);
+		background: rgb(255 255 255 / 0.04);
+		border: 1px solid var(--line);
+		justify-self: start;
+		max-width: 100%;
 	}
-	.meter.s0 span.on,
-	.meter.s1 span.on {
-		background: var(--danger);
-	}
-	.meter.s2 span.on {
-		background: var(--rating);
-	}
-	.meter.s3 span.on,
-	.meter.s4 span.on {
-		background: var(--success);
-	}
-	.bad {
-		color: var(--danger);
-	}
-	.check {
-		display: flex;
-		gap: 0.65rem;
-		align-items: flex-start;
+	.tabs button {
+		min-height: 2.5rem;
+		padding: 0 1rem;
+		border: 0;
+		border-radius: var(--radius-pill);
+		background: none;
 		color: var(--text-2);
-		cursor: pointer;
-		line-height: 1.45;
+		font-weight: 650;
 	}
-	.check input {
-		width: 1.15rem;
-		height: 1.15rem;
-		margin-top: 0.15rem;
-		accent-color: var(--accent);
-		flex: none;
+	.tabs button.active {
+		background: var(--bg-elev-3);
+		color: var(--text);
 	}
 	.form {
 		display: grid;
 		gap: 1rem;
-		margin-top: 0.25rem;
+		min-width: 0;
 	}
-	.modes {
+	.field {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-		gap: 0.75rem;
+		gap: 0.4rem;
+		min-width: 0;
 	}
-	.mode {
-		text-align: left;
-		display: grid;
-		gap: 0.35rem;
-		padding: 1rem 1.1rem;
-		border-radius: var(--radius-m);
-		border: 1px solid var(--line-strong);
-		background: var(--bg-elev-1);
-		cursor: pointer;
-		transition:
-			border-color var(--dur-fast) var(--ease-out),
-			background var(--dur-fast) var(--ease-out);
-	}
-	.mode:hover {
-		background: var(--bg-elev-2);
-	}
-	.mode.active {
-		border-color: var(--accent);
-		background: var(--accent-faint);
-	}
-	.mode-title {
-		display: flex;
-		gap: 0.5rem;
-		align-items: center;
-		font-weight: 700;
-	}
-	.mode-desc {
-		color: var(--text-3);
+	.field label {
+		font-weight: 650;
 		font-size: var(--text-s);
-		line-height: 1.45;
+	}
+	input[type='email'],
+	input[type='text'],
+	input[type='url'] {
+		width: 100%;
+		min-width: 0;
+		min-height: 2.75rem;
+		font: inherit;
+		color: var(--text);
+		background: rgb(255 255 255 / 0.04);
+		border: 1px solid var(--line-strong);
+		border-radius: var(--radius-m);
+		padding: 0 0.9rem;
+	}
+	input:focus-visible {
+		outline: none;
+		box-shadow: var(--focus-ring);
+	}
+	input:disabled {
+		opacity: 0.6;
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.6rem;
+		align-items: center;
+	}
+	.ok {
+		color: var(--success);
+		font-size: var(--text-s);
 	}
 	.status-head {
 		display: flex;
@@ -930,16 +722,16 @@
 	.badge {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.45rem;
-		padding: 0.3rem 0.75rem;
+		gap: 0.4rem;
+		padding: 0.3rem 0.7rem;
 		border-radius: var(--radius-pill);
-		background: var(--bg-elev-3);
+		background: rgb(255 255 255 / 0.06);
 		font-size: var(--text-s);
-		font-weight: 600;
+		font-weight: 650;
 	}
 	.dot {
-		width: 0.55rem;
-		height: 0.55rem;
+		width: 0.5rem;
+		height: 0.5rem;
 		border-radius: 50%;
 		background: var(--text-3);
 	}
@@ -948,129 +740,63 @@
 	}
 	.badge.syncing .dot {
 		background: var(--accent);
-		animation: pulse 1s var(--ease-in-out) infinite alternate;
 	}
+	.badge.error .dot,
 	.badge.offline .dot {
-		background: var(--rating);
-	}
-	.badge.error .dot {
 		background: var(--danger);
-	}
-	@keyframes pulse {
-		to {
-			opacity: 0.3;
-		}
 	}
 	.facts {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
 		gap: 0.75rem;
-		margin: 0;
 	}
 	.facts dt {
-		font-size: var(--text-xs);
-		text-transform: uppercase;
-		letter-spacing: var(--tracking-caps);
 		color: var(--text-3);
-		font-weight: 700;
+		font-size: var(--text-s);
 	}
 	.facts dd {
-		margin: 0.2rem 0 0;
+		font-weight: 650;
 		overflow-wrap: anywhere;
 	}
-	.mono {
-		font-variant-numeric: tabular-nums;
-	}
-	.code {
-		font-size: clamp(2.2rem, 1.4rem + 4vw, 3.6rem);
-		font-weight: 800;
-		letter-spacing: 0.12em;
-		font-variant-numeric: tabular-nums;
-		text-align: center;
-		padding: 1rem;
-		border-radius: var(--radius-m);
-		background: var(--bg-elev-1);
-		border: 1px solid var(--accent-soft);
-		box-shadow: var(--glow);
-		user-select: all;
-	}
-	.countdown {
-		display: flex;
-		gap: 0.4rem;
-		align-items: center;
-		justify-content: center;
-		color: var(--text-2);
-		font-variant-numeric: tabular-nums;
-	}
 	.devices {
-		list-style: none;
-		margin: 0;
-		padding: 0;
 		display: grid;
 		gap: 0.5rem;
+		list-style: none;
+		padding: 0;
 	}
 	.devices li {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		gap: 1rem;
-		padding: 0.75rem 0.9rem;
-		border-radius: var(--radius-m);
-		background: var(--bg-elev-1);
+		padding: 0.6rem 0;
+		border-bottom: 1px solid var(--line);
 	}
 	.dev-name {
-		font-weight: 600;
-		display: flex;
-		gap: 0.5rem;
-		align-items: center;
-		flex-wrap: wrap;
+		font-weight: 650;
 	}
 	.pill {
-		font-size: var(--text-xs);
+		margin-left: 0.4rem;
 		padding: 0.1rem 0.5rem;
 		border-radius: var(--radius-pill);
-		background: var(--accent-soft);
-		color: var(--accent-strong);
+		background: var(--accent-faint);
+		color: var(--accent);
+		font-size: var(--text-xs, 0.75rem);
 	}
 	.what {
-		list-style: none;
-		margin: 0;
-		padding: 0;
 		display: grid;
-		gap: 0.5rem;
+		gap: 0.45rem;
+		list-style: none;
+		padding: 0;
 		color: var(--text-2);
 	}
 	.what li {
 		display: flex;
-		gap: 0.55rem;
-		align-items: flex-start;
-		line-height: 1.45;
+		gap: 0.5rem;
+		align-items: center;
 	}
-	.what :global(svg) {
-		color: var(--success);
-		flex: none;
-		margin-top: 0.2rem;
-	}
-	.danger {
-		border-color: color-mix(in oklab, var(--danger) 25%, var(--line));
-	}
-	.confirm {
-		outline: none;
-		display: grid;
-		gap: 0.8rem;
-		padding: 1rem;
-		border-radius: var(--radius-m);
-		background: color-mix(in oklab, var(--danger) 10%, transparent);
-	}
-	.sync :global(.danger-text) {
-		color: var(--danger);
-	}
-	.sync :global(.danger-btn) {
-		background: var(--danger);
-	}
-	@media (max-width: 520px) {
-		.e2e {
-			grid-template-columns: 1fr;
-		}
+	.advanced summary {
+		cursor: pointer;
+		font-weight: 700;
 	}
 </style>

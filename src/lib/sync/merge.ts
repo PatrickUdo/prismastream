@@ -357,7 +357,9 @@ export function reconcileProfiles(
 export const mergeProfiles = mergeLwwMap<Profile>;
 
 export function profilesFromDoc(doc: ProfilesDoc): Profile[] {
-	return lwwValues(doc).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
+	return lwwValues(doc)
+		.filter((p) => !!p && typeof p.id === 'string')
+		.sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +443,8 @@ export const mergeSources = mergeLwwMap<SyncedSource>;
 
 export function sourcesFromDoc(doc: SourcesDoc): SourceConfig[] {
 	return lwwValues(doc)
-		.map((s) => s.config)
+		.map((s) => s?.config)
+		.filter((c): c is SourceConfig => !!c && typeof c.id === 'string')
 		.sort((a, b) => a.addedAt - b.addedAt || (a.id < b.id ? -1 : 1));
 }
 

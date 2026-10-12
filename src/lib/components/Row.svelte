@@ -27,6 +27,8 @@
 	let { title, items, key, item, variant = 'poster', eyebrow, href, action }: Props = $props();
 
 	const id = $props.id();
+	// Never render a hole: an undefined entry would crash the keyed each (`key(undefined)`).
+	const list = $derived(items.filter((x) => x !== undefined && x !== null));
 	let track = $state<HTMLUListElement>();
 	let canPrev = $state(false);
 	let canNext = $state(false);
@@ -39,7 +41,7 @@
 
 	$effect(() => {
 		if (!track) return;
-		void items.length;
+		void list.length;
 		update();
 		const ro = new ResizeObserver(update);
 		ro.observe(track);
@@ -72,7 +74,7 @@
 
 	<div class="viewport">
 		<ul class="track" bind:this={track} onscroll={update} data-nav-row>
-			{#each items as it, i (key(it))}
+			{#each list as it, i (key(it))}
 				<li>{@render item(it, i)}</li>
 			{/each}
 		</ul>

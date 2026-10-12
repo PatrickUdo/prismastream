@@ -5,7 +5,9 @@
 	import { afterNavigate, beforeNavigate } from '$app/navigation';
 	import type { Episode, LangCode, StreamVariant, Title } from '#lib/types.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import { resource } from '#lib/catalog/resource.svelte.ts';
+	import { playableVariant } from '#lib/player/play-url.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import { displayTitle } from '#lib/components/titles.ts';
@@ -53,34 +55,18 @@
 		subtitlesOn: user.active?.subtitlesOn ?? false
 	});
 
-	// Series episodes may be loaded lazily (Xtream): ensureSeasons() once per title.
-	let lazyTitle = $state.raw<Title | undefined>();
-	let seasonsRequested = '';
-	let seasonsDone = $state('');
-
-	const baseTitle = $derived(catalog.getTitle(titleId));
+	// The full title (variants with play urls, seasons) from the provider of this mode.
+	const detail = resource(
+		() => (library.initialized && titleId ? `${library.mode}|${titleId}` : null),
+		(_k, signal) => library.provider.title(titleId, { similar: false }, signal)
+	);
+	const baseTitle = $derived<Title | undefined>(
+		detail.key?.endsWith(`|${titleId}`) ? (detail.value ?? undefined) : undefined
+	);
 	// Kids mode: a title that is not kids-safe cannot be opened through the url either.
 	const blocked = $derived(!!baseTitle && !kids.isAllowed(baseTitle));
-	const title = $derived(
-		baseTitle?.kind === 'series' && !baseTitle.seasons && lazyTitle?.id === titleId
-			? lazyTitle
-			: baseTitle
-	);
+	const title = $derived(baseTitle);
 	const isSeries = $derived(title?.kind === 'series');
-
-	$effect(() => {
-		const id = titleId;
-		if (!baseTitle || baseTitle.kind !== 'series' || baseTitle.seasons || blocked) return;
-		if (seasonsRequested === id) return;
-		seasonsRequested = id;
-		catalog
-			.ensureSeasons(id)
-			.then((loaded) => {
-				if (loaded?.id === id) lazyTitle = loaded;
-			})
-			.catch((err: unknown) => console.warn('[watch] ensureSeasons failed', err))
-			.finally(() => (seasonsDone = id));
-	});
 
 	const episode = $derived<Episode | undefined>(
 		isSeries && title?.seasons
@@ -106,11 +92,12 @@
 	const status = $derived.by(() => {
 		if (!user.ready) return 'loading';
 		if (!title) {
-			if (catalog.status === 'error') return 'catalog-error';
-			return catalog.status === 'ready' ? 'not-found' : 'loading';
+			if (detail.loading || !library.initialized || detail.key === null) return 'loading';
+			if (detail.error) return 'catalog-error';
+			return detail.key?.endsWith(`|${titleId}`) ? 'not-found' : 'loading';
 		}
 		if (blocked) return 'kids-blocked';
-		if (isSeries && !title.seasons) return seasonsDone === titleId ? 'no-variants' : 'loading';
+		if (isSeries && !title.seasons) return 'no-variants';
 		if (isSeries && episodeParam && !episode) return 'episode-not-found';
 		if (!current) return 'no-variants';
 		return 'ready';
@@ -197,6 +184,7 @@
 		engine.load({
 			url: v.url,
 			containerExt: v.containerExt,
+			altUrls: v.altUrls,
 			live: false,
 			startAt,
 			autoplay,
@@ -231,7 +219,7 @@
 		if (status !== 'ready' || !title || !current) return;
 		const tl = title;
 		const ep = episode;
-		const v = current;
+		const v = playableVariant(current);
 		untrack(() => start(tl, ep, v));
 	});
 
@@ -417,6 +405,6 @@
 		kind={status === 'kids-blocked' ? 'blocked' : 'error'}
 		detail={status === 'kids-blocked' ? t('profiles.kids.blockedBody') : undefined}
 		onBack={back}
-		onRetry={status === 'catalog-error' ? () => catalog.refresh() : undefined}
+		onRetry={status === 'catalog-error' ? () => detail.reload() : undefined}
 	/>
 {/if}

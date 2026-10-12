@@ -5,15 +5,14 @@
 	recent searches (per profile), popular genres and trending titles.
 -->
 <script lang="ts">
-	import type { Title } from '#lib/types.ts';
+	import type { TitleCard as Card } from '#lib/types.ts';
 	import { afterNavigate, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
-	import { genreCounts, uniqueTitles } from '#lib/recommend.ts';
-	import { searchIndexFor, type SearchIndex } from '#lib/search/index.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import { resource } from '#lib/catalog/resource.svelte.ts';
 	import { addRecent, clearRecent, loadRecent, removeRecent } from '#lib/search/recent.ts';
 	import TitleCard from '#lib/components/TitleCard.svelte';
 	import ChannelCard from '#lib/components/ChannelCard.svelte';
@@ -68,25 +67,27 @@
 		input?.focus();
 	}
 
-	// ---- Index (built once per catalog, never per keystroke) --------------------
-	let index = $state.raw<SearchIndex | null>(null);
-	$effect(() => {
-		const titles = kids.visibleTitles;
-		const channels = kids.visibleChannels;
-		const key = [
-			catalog.catalog.builtAt,
-			catalog.titles.length,
-			catalog.channels.length,
-			kids.active ? 'kids' : 'all'
-		].join(':');
-		// Yield first so the page paints before a (large) index is built.
-		const id = setTimeout(() => (index = searchIndexFor(key, titles, channels)), 0);
-		return () => clearTimeout(id);
-	});
-
-	const loading = $derived(catalog.status === 'idle' || catalog.status === 'loading' || !index);
+	// ---- Results (local index or the backend search; previous request aborted) --------------
 	const q = $derived(query.trim());
-	const results = $derived(index && q ? index.search(q) : null);
+	const search = resource(
+		() => (library.initialized && q ? `${library.version}|${kids.active}|${q}` : null),
+		async (_k, signal) => {
+			// The input is debounced already; remote mode waits a little more per keystroke.
+			if (library.mode === 'remote')
+				await new Promise<void>((resolve, reject) => {
+					const timer = setTimeout(resolve, 180);
+					signal.addEventListener('abort', () => {
+						clearTimeout(timer);
+						reject(new DOMException('Aborted', 'AbortError'));
+					});
+				});
+			return library.provider.search(q, { kids: kids.active }, signal);
+		}
+	);
+	const results = $derived(
+		q && search.value && search.key?.endsWith(`|${q}`) ? search.value : null
+	);
+	const loading = $derived(!!q && !results && (search.loading || library.status === 'loading'));
 
 	type GroupId = 'movies' | 'series' | 'people' | 'channels' | 'genres';
 	const groups = $derived.by(() => {
@@ -111,10 +112,19 @@
 
 	// ---- Without a query ----------------------------------------------------------
 	let recent = $derived(loadRecent(user.activeId));
-	const genres = $derived(genreCounts(kids.visibleTitles).slice(0, 14));
-	const trending = $derived(
-		uniqueTitles([...kids.visibleTitles].sort((a, b) => b.popularity - a.popularity)).slice(0, 12)
+	const facets = resource(
+		() => (library.initialized ? `${library.version}|${kids.active}` : null),
+		(_k, signal) => library.provider.facets({ kids: kids.active }, signal)
 	);
+	const genres = $derived(
+		[...(facets.value?.genres ?? [])].sort((a, b) => (b.count ?? 0) - (a.count ?? 0)).slice(0, 14)
+	);
+	const popular = resource(
+		() => (library.initialized ? `${library.version}|${kids.active}` : null),
+		(_k, signal) =>
+			library.provider.titles({ sort: 'popular', limit: 12, kids: kids.active }, signal)
+	);
+	const trending = $derived(kids.filterTitles(popular.value?.items ?? []).slice(0, 12));
 
 	function remember() {
 		if (q) recent = addRecent(user.activeId, q);
@@ -148,8 +158,8 @@
 		if ((e.target as HTMLElement).closest('a')) remember();
 	}
 
-	const genreHref = (g: { genre: string; movies: number }) =>
-		libraryHref(g.movies > 0 ? 'movie' : 'series', { genre: g.genre });
+	const genreHref = (g: { slug: string; movies: number }) =>
+		libraryHref(g.movies > 0 ? 'movie' : 'series', { genre: g.slug });
 	const fmt = (n: number) => new Intl.NumberFormat(i18n.locale).format(n);
 </script>
 
@@ -157,7 +167,7 @@
 	<title>{q ? `${q} · ` : ''}{t('nav.search')} · PrismaStream</title>
 </svelte:head>
 
-{#snippet titleGrid(hits: { title: Title; aka?: string }[], id: string)}
+{#snippet titleGrid(hits: { title: Card; aka?: string }[], id: string)}
 	{@const shown = expanded[id] ? hits : hits.slice(0, PAGE)}
 	<ul class="grid">
 		{#each shown as hit, i (hit.title.id)}
@@ -249,8 +259,8 @@
 				<section class="block">
 					<h2 class="bh">{t('search.tryGenre')}</h2>
 					<div class="chips">
-						{#each genres.slice(0, 8) as g (g.genre)}
-							<Chip href={libraryHref('movie', { genre: g.genre })} data-focusable>{g.genre}</Chip>
+						{#each genres.slice(0, 8) as g (g.slug)}
+							<Chip href={libraryHref('movie', { genre: g.slug })} data-focusable>{g.name}</Chip>
 						{/each}
 					</div>
 				</section>
@@ -306,7 +316,7 @@
 						</ul>
 					{:else if g.id === 'genres'}
 						<ul class="genres">
-							{#each results.genres as gg (gg.genre)}
+							{#each results.genres as gg (gg.slug)}
 								<li>
 									<GenreTile genre={gg.genre} count={gg.movies + gg.series} href={genreHref(gg)} />
 								</li>
@@ -356,9 +366,9 @@
 				<section class="block">
 					<h2 class="bh">{t('search.popularGenres')}</h2>
 					<div class="chips">
-						{#each genres as g (g.genre)}
-							<Chip href={libraryHref('movie', { genre: g.genre })} hint={g.count} data-focusable>
-								{g.genre}
+						{#each genres as g (g.slug)}
+							<Chip href={libraryHref('movie', { genre: g.slug })} hint={g.count} data-focusable>
+								{g.name}
 							</Chip>
 						{/each}
 					</div>

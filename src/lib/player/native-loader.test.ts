@@ -248,3 +248,56 @@ describe('NativeFallbackLoader', () => {
 		loader.destroy();
 	});
 });
+
+describe('NativeFallbackLoader robustness (Android "Uncaught (in promise) ... reading \'id\'")', () => {
+	it('contains an exception thrown by an hls.js callback instead of rejecting', async () => {
+		const memo = new HostMemo();
+		memo.markNative('http://iptv.test/a.ts');
+		const { FakeXhr } = fakeBase(() => {});
+		const Loader = createNativeFallbackLoader(FakeXhr, {
+			isNative: () => true,
+			memo,
+			request: async (r) => ({ status: 200, data: 'AQID', headers: {}, url: r.url })
+		});
+		const unhandled: unknown[] = [];
+		const onUnhandled = (e: unknown) => unhandled.push(e);
+		process.on('unhandledRejection', onUnhandled);
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const cb = callbacks();
+		const boom = () => {
+			throw new TypeError("Cannot read properties of undefined (reading 'id')");
+		};
+		// Before the fix, a throw in onSuccess landed in .catch → onError, which threw again
+		// (hls.js controllers gone) → unhandled rejection.
+		cb.onSuccess.mockImplementation(boom);
+		cb.onError.mockImplementation(boom);
+		new Loader({} as HlsConfig).load(ctx('http://iptv.test/b.ts'), cfg, cb);
+		await flush();
+		await flush();
+		process.off('unhandledRejection', onUnhandled);
+		expect(cb.onSuccess).toHaveBeenCalledOnce();
+		expect(unhandled).toHaveLength(0);
+		expect(warn).toHaveBeenCalled();
+		warn.mockRestore();
+	});
+
+	it('does not deliver a late response after destroy (zap / leaving the player)', async () => {
+		const memo = new HostMemo();
+		memo.markNative('http://iptv.test/a.ts');
+		const { FakeXhr } = fakeBase(() => {});
+		let resolve!: (r: NativeResponse) => void;
+		const Loader = createNativeFallbackLoader(FakeXhr, {
+			isNative: () => true,
+			memo,
+			request: () => new Promise((r) => (resolve = r))
+		});
+		const cb = callbacks();
+		const loader = new Loader({} as HlsConfig);
+		loader.load(ctx('http://iptv.test/c.ts'), cfg, cb);
+		loader.destroy();
+		resolve({ status: 200, data: 'AQID', headers: {}, url: 'http://iptv.test/c.ts' });
+		await flush();
+		expect(cb.onSuccess).not.toHaveBeenCalled();
+		expect(cb.onError).not.toHaveBeenCalled();
+	});
+});

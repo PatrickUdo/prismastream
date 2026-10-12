@@ -36,6 +36,8 @@ export interface QualityLevel {
 export interface LoadRequest {
 	url: string;
 	containerExt?: string;
+	/** Fallback urls of the same stream (tried after the url's own candidates). */
+	altUrls?: string[];
 	live: boolean;
 	/** Seconds to start at (VOD only). */
 	startAt?: number;
@@ -285,7 +287,7 @@ export class PlayerEngine {
 		this.#teardown();
 		this.#req = req;
 		this.live = req.live;
-		this.#candidates = streamCandidates(req.url, req.containerExt);
+		this.#candidates = streamCandidates(req.url, req.containerExt, req.altUrls);
 		this.#candidateIndex = 0;
 		this.#resetState();
 		this.#openCandidate();

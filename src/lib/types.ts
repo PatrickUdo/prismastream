@@ -330,3 +330,46 @@ export interface AppSettings {
 	reduceMotion: boolean;
 	updatedAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// Server-side catalog (remote mode, see docs/BACKEND.md). Light shapes for lists.
+// ---------------------------------------------------------------------------
+
+/** A light title for lists and rows: no variants, no seasons (see docs/BACKEND.md). */
+export type TitleCard = Pick<
+	Title,
+	| 'id'
+	| 'kind'
+	| 'title'
+	| 'originalTitle'
+	| 'year'
+	| 'genres'
+	| 'rating'
+	| 'runtimeMin'
+	| 'posterUrl'
+	| 'backdropUrl'
+	| 'logoUrl'
+	| 'addedAt'
+	| 'popularity'
+	| 'languages'
+	| 'subtitleLanguages'
+	| 'qualities'
+	| 'certification'
+	| 'kidsSafe'
+	| 'originalLang'
+> & {
+	/** Max. 12 (for displayTitle and search). */
+	altTitles: { title: string; lang?: LangCode }[];
+	/** Max. 280 characters. */
+	overview?: string;
+	seasonCount?: number;
+};
+
+/** A channel without its variants (home row, search results). */
+export type ChannelCard = Omit<Channel, 'variants'> & { variantCount?: number };
+
+/** Current and next programme of a channel. */
+export interface NowNext {
+	now?: EpgProgramme;
+	next?: EpgProgramme;
+}

@@ -13,7 +13,7 @@
 	import LangBadge from '#lib/components/LangBadge.svelte';
 	import { bestQuality, tn } from '#lib/components/format.ts';
 	import ChannelLogo from './ChannelLogo.svelte';
-	import { formatTime, formatTimeRange, nowNext, progressAt, sourceCount } from './epg.ts';
+	import { formatTime, formatTimeRange, progressAt, sourceCount } from './epg.ts';
 	import { shortEpg } from './live.svelte.ts';
 	import { liveHref } from '#lib/components/links.ts';
 
@@ -28,7 +28,7 @@
 
 	let { channel, now, current = false, onsources, oninfo }: Props = $props();
 
-	const nn = $derived(nowNext(shortEpg.programmes(channel), now));
+	const nn = $derived(shortEpg.nowNext(channel, now));
 	const fav = $derived(user.isFavoriteChannel(channel.id));
 	const multi = $derived(channel.variants.length > 1);
 	const nSources = $derived(sourceCount(channel));
@@ -44,7 +44,7 @@
 	);
 
 	$effect(() => {
-		shortEpg.request(channel);
+		shortEpg.requestRow(channel);
 	});
 </script>
 

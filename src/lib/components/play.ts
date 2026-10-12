@@ -1,6 +1,6 @@
 // "Nu kijken" / "Verder kijken" target for a title, based on the active profile's
 // progress and language preference.
-import type { Episode, Title } from '#lib/types.ts';
+import type { Episode, Title, TitleCard } from '#lib/types.ts';
 import type { ResolvedPathname } from '$app/types';
 import { pickVariant, type LangPrefs } from '#lib/merge/pick.ts';
 import { user } from '#lib/stores/user.svelte.ts';
@@ -32,7 +32,30 @@ function nextEpisode(title: Title, ep: Episode): Episode | undefined {
 	return i >= 0 ? list[i + 1] : undefined;
 }
 
-export function playAction(title: Title): PlayAction {
+/** A list card (no variants/seasons): the player loads the title and picks the version. */
+function cardPlayAction(card: TitleCard): PlayAction {
+	const p = user.latestProgress(card.id);
+	const ratio = p && p.durationSec > 0 ? p.positionSec / p.durationSec : 0;
+	const resume = !!p && p.positionSec >= 30 && ratio < 0.95;
+	if (card.kind === 'movie')
+		return {
+			href: watchHref(card.id, resume ? { variantId: p!.variantId } : {}),
+			resume,
+			ratio: resume ? ratio : 0,
+			playable: true
+		};
+	if (resume && p?.episodeId)
+		return {
+			href: watchHref(card.id, { episodeId: p.episodeId, variantId: p.variantId }),
+			resume: true,
+			ratio,
+			playable: true
+		};
+	return { href: titleHref(card.id), resume: false, ratio: 0, playable: false };
+}
+
+export function playAction(title: TitleCard | Title): PlayAction {
+	if (!('variants' in title) || !Array.isArray(title.variants)) return cardPlayAction(title);
 	const prefs = profilePrefs();
 	const p = user.latestProgress(title.id);
 	const ratio = p && p.durationSec > 0 ? p.positionSec / p.durationSec : 0;

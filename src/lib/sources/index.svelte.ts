@@ -28,7 +28,16 @@ import type {
 	SourceConfig,
 	XtreamSource
 } from '#lib/types.ts';
-import { sampleCatalog, SAMPLE_SOURCE, SAMPLE_SOURCE_NAMES } from '#lib/sample/index.ts';
+import { SAMPLE_SOURCE, SAMPLE_SOURCE_NAMES } from '#lib/sample/meta.ts';
+import { DEMO } from '#lib/demo.ts';
+import type { RawCatalog as DemoCatalog } from '#lib/types.ts';
+
+/** The demo catalog, loaded on demand (and absent from production builds, see #lib/demo.ts). */
+async function sampleCatalog(): Promise<DemoCatalog> {
+	if (!DEMO)
+		return { sourceId: 'sample', movies: [], series: [], channels: [], epg: [], fetchedAt: 0 };
+	return (await import('#lib/sample/index.ts')).sampleCatalog();
+}
 import { loadJSON, saveJSON, uid } from '#lib/storage.ts';
 import { t } from '#lib/i18n/index.svelte.ts';
 import { httpGet, HttpError, toHttpError, type HttpErrorCode } from '#lib/providers/http.ts';
@@ -205,7 +214,7 @@ export function onChange(cb: () => void): () => void {
 // ---------------------------------------------------------------------------
 
 class SourcesStore {
-	list = $state<SourceEntry[]>([{ ...SAMPLE_SOURCE }]);
+	list = $state<SourceEntry[]>(DEMO ? [{ ...SAMPLE_SOURCE }] : []);
 	progress = $state<Record<string, SourceProgress>>({});
 	/** Global CORS proxy for the browser (per-source proxyUrl wins). */
 	proxyUrl = $state('');
@@ -232,7 +241,7 @@ class SourcesStore {
 				sample = { ...SAMPLE_SOURCE, enabled: s.enabled, stats: s.stats, lastSyncAt: s.lastSyncAt };
 			else list.push(s);
 		}
-		this.list = [sample ?? { ...SAMPLE_SOURCE }, ...list];
+		this.list = DEMO ? [sample ?? { ...SAMPLE_SOURCE }, ...list] : list;
 	}
 
 	get(id: string): SourceEntry | undefined {
@@ -415,7 +424,7 @@ async function fetchCatalog(src: SourceEntry, secret: SourceSecret): Promise<Fet
 			warnings: []
 		};
 	}
-	const s = sampleCatalog();
+	const s = await sampleCatalog();
 	return { movies: s.movies, series: s.series, channels: s.channels, epgUrls: [], warnings: [] };
 }
 
@@ -509,7 +518,8 @@ async function loadOne(src: SourceEntry, force: boolean): Promise<RawCatalog | n
 
 async function doLoadOne(src: SourceEntry, force: boolean): Promise<RawCatalog | null> {
 	if (src.type === 'sample') {
-		const cat = sampleCatalog();
+		if (!DEMO) return null;
+		const cat = await sampleCatalog();
 		sources.patch(src.id, { stats: statsOf(cat), lastSyncAt: cat.fetchedAt, lastError: undefined });
 		sources.setProgress(src.id, 'done', 1);
 		return cat;
@@ -647,7 +657,8 @@ export async function loadSeriesInfo(
 	if (src.type === 'sample') {
 		return {
 			info: {},
-			episodes: sampleCatalog().series.find((s) => s.providerId === providerId)?.episodes ?? []
+			episodes:
+				(await sampleCatalog()).series.find((s) => s.providerId === providerId)?.episodes ?? []
 		};
 	}
 	const snap = $state.snapshot(src) as SourceEntry;
@@ -1100,7 +1111,7 @@ export async function testSource(
 				warnings: []
 			};
 		}
-		const s = sampleCatalog();
+		const s = await sampleCatalog();
 		return {
 			ok: true,
 			movies: s.movies.length,

@@ -1,5 +1,5 @@
 // Small presentation helpers shared by components and pages.
-import type { LangCode, Quality, Title } from '#lib/types.ts';
+import type { LangCode, Quality, Title, TitleCard } from '#lib/types.ts';
 import { qualityRank } from '#lib/lang.ts';
 import { i18n, t } from '#lib/i18n/index.svelte.ts';
 
@@ -70,14 +70,16 @@ export function sortLangsByPreference(langs: LangCode[], preferred: LangCode[]):
 }
 
 /** "2023 · 1 u 52 min · Sci-fi" style meta parts for a title. */
-export function titleMeta(title: Title, opts: { genres?: number } = {}): string[] {
+export function titleMeta(title: TitleCard | Title, opts: { genres?: number } = {}): string[] {
 	const parts: string[] = [];
 	if (title.year) parts.push(String(title.year));
 	if (title.kind === 'movie') {
 		const rt = formatRuntime(title.runtimeMin);
 		if (rt) parts.push(rt);
-	} else if (title.seasons?.length) {
+	} else if ('seasons' in title && title.seasons?.length) {
 		parts.push(tn('ui.seasons', title.seasons.length));
+	} else if ('seasonCount' in title && title.seasonCount) {
+		parts.push(tn('ui.seasons', title.seasonCount));
 	} else {
 		parts.push(t('common.series'));
 	}

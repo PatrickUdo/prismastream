@@ -10,4 +10,12 @@ declare global {
 	}
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- augments Vite's env typing
+interface ImportMetaEnv {
+	/** Default backend (catalog + sync) url, e.g. https://backend.prismastream.patrickudo.nl */
+	readonly VITE_BACKEND_URL?: string;
+	/** 'false' leaves the demo library out (production). Default: on. */
+	readonly VITE_DEMO?: string;
+}
+
 export {};

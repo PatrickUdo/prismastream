@@ -1,12 +1,14 @@
 <!--
 	Settings overview: profile, appearance (accent, motion, language), home rows, playback,
-	sources (+ global CORS proxy), metadata (TMDB key, refresh), sync and about.
+	sources, metadata (TMDB key, refresh), PrismaStream Cloud (account), storage and about.
 	In kids mode the settings are restricted until an adult PIN is entered.
 -->
 <script lang="ts">
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import { formatBytes, storageEstimate, type StorageUse } from '#lib/catalog/storage.ts';
+	import { syncEngine } from '#lib/sync/index.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import { sources } from '#lib/sources/index.svelte.ts';
 	import { languageName } from '#lib/lang.ts';
@@ -45,26 +47,6 @@
 	// ---- Sources ----------------------------------------------------------------
 	const userSources = $derived(sources.list.filter((s) => s.type !== 'sample'));
 	const enabledCount = $derived(sources.list.filter((s) => s.enabled).length);
-	let proxy = $state(sources.proxyUrl);
-	let proxyStatus = $state<'' | 'saved' | 'invalid'>('');
-	$effect(() => {
-		// Pick up the stored value once the sources store has restored it.
-		void sources.ready.then(() => {
-			if (!proxy) proxy = sources.proxyUrl;
-		});
-	});
-
-	async function saveProxy(e: SubmitEvent) {
-		e.preventDefault();
-		const v = proxy.trim();
-		if (v && !/^https?:\/\/\S+$/i.test(v.replace('{url}', ''))) {
-			proxyStatus = 'invalid';
-			return;
-		}
-		await sources.setProxyUrl(v);
-		proxyStatus = 'saved';
-	}
-
 	// ---- Metadata ----------------------------------------------------------------
 	let tmdbKey = $state(user.settings.tmdbApiKey ?? '');
 	let showKey = $state(false);
@@ -79,19 +61,47 @@
 	async function refreshCatalog() {
 		refreshing = true;
 		try {
-			await catalog.refresh({ force: true });
+			await library.refresh({ force: true });
+		} catch {
+			// The status line shows the error.
 		} finally {
 			refreshing = false;
 		}
 	}
 	const catalogSummary = $derived(
 		t('settings.metadata.summary', {
-			titles: new Intl.NumberFormat(i18n.locale).format(catalog.titles.length),
-			channels: new Intl.NumberFormat(i18n.locale).format(catalog.channels.length)
+			titles: new Intl.NumberFormat(i18n.locale).format(library.counts.titles),
+			channels: new Intl.NumberFormat(i18n.locale).format(library.counts.channels)
 		})
 	);
 
-	const syncOn = $derived(!!user.settings.syncServerUrl);
+	const remote = $derived(library.mode === 'remote');
+	const syncOn = $derived(syncEngine.configured);
+
+	// ---- Storage ---------------------------------------------------------------------
+	let storage = $state<StorageUse | null>(null);
+	let clearing = $state(false);
+	let cleared = $state(false);
+	let cacheUse = $state({ items: 0, bytes: 0 });
+	async function measure() {
+		storage = await storageEstimate();
+		cacheUse = library.cacheUse;
+	}
+	$effect(() => {
+		void measure();
+	});
+	async function clearCache() {
+		clearing = true;
+		cleared = false;
+		try {
+			await library.clearLocalCache();
+			cleared = true;
+		} finally {
+			clearing = false;
+			// Deleting databases settles asynchronously; measure again a moment later.
+			setTimeout(() => void measure(), 600);
+		}
+	}
 </script>
 
 <svelte:head>
@@ -237,97 +247,77 @@
 					<span>
 						<strong>{t('settings.sources.manage')}</strong>
 						<span class="muted">
-							{t('settings.sources.count', { n: userSources.length, enabled: enabledCount })}
+							{remote
+								? t('cloud.settings.sourcesRemote')
+								: t('settings.sources.count', { n: userSources.length, enabled: enabledCount })}
 						</span>
 					</span>
 					<Icon name="chevron-right" size="1.2rem" />
 				</a>
-				{#if !sources.native}
-					<form class="field-block" onsubmit={saveProxy}>
-						<label class="label" for="proxy-url">{t('settings.sources.proxy')}</label>
-						<p class="muted small">{t('settings.sources.proxyHint')}</p>
-						<div class="inline">
-							<input
-								id="proxy-url"
-								class="field"
-								type="url"
-								inputmode="url"
-								autocomplete="off"
-								spellcheck="false"
-								placeholder="https://proxy.example/?url={'{url}'}"
-								bind:value={proxy}
-								oninput={() => (proxyStatus = '')}
-								aria-invalid={proxyStatus === 'invalid' ? 'true' : undefined}
-								data-focusable
-							/>
-							<Button variant="glass" type="submit" data-focusable>{t('common.save')}</Button>
-						</div>
-						<p class="status" aria-live="polite">
-							{#if proxyStatus === 'saved'}<span class="ok">{t('settings.saved')}</span>
-							{:else if proxyStatus === 'invalid'}<span class="bad"
-									>{t('settings.sources.proxyInvalid')}</span
-								>{/if}
-						</p>
-					</form>
-				{/if}
 			</section>
 
 			<!-- Metadata --------------------------------------------------------------- -->
 			<section class="card glass">
-				{@render sectionHead('key', t('settings.metadata.title'), t('settings.metadata.body'))}
-				<form class="field-block" onsubmit={saveTmdb}>
-					<label class="label" for="tmdb-key">{t('settings.metadata.key')}</label>
-					<div class="inline">
-						<div class="secret">
-							<input
-								id="tmdb-key"
-								class="field"
-								type={showKey ? 'text' : 'password'}
-								autocomplete="off"
-								spellcheck="false"
-								bind:value={tmdbKey}
-								oninput={() => (tmdbSaved = false)}
-								placeholder={t('settings.metadata.keyPlaceholder')}
-								data-focusable
-							/>
-							<button
-								type="button"
-								class="reveal"
-								aria-label={showKey ? t('settings.metadata.hide') : t('settings.metadata.show')}
-								aria-pressed={showKey}
-								data-focusable
-								onclick={() => (showKey = !showKey)}
-							>
-								<Icon name={showKey ? 'eye-off' : 'eye'} size="1.15rem" />
-							</button>
+				{@render sectionHead(
+					'key',
+					t('settings.metadata.title'),
+					remote ? t('cloud.settings.metadataRemote') : t('settings.metadata.body')
+				)}
+				{#if !remote}
+					<form class="field-block" onsubmit={saveTmdb}>
+						<label class="label" for="tmdb-key">{t('settings.metadata.key')}</label>
+						<div class="inline">
+							<div class="secret">
+								<input
+									id="tmdb-key"
+									class="field"
+									type={showKey ? 'text' : 'password'}
+									autocomplete="off"
+									spellcheck="false"
+									bind:value={tmdbKey}
+									oninput={() => (tmdbSaved = false)}
+									placeholder={t('settings.metadata.keyPlaceholder')}
+									data-focusable
+								/>
+								<button
+									type="button"
+									class="reveal"
+									aria-label={showKey ? t('settings.metadata.hide') : t('settings.metadata.show')}
+									aria-pressed={showKey}
+									data-focusable
+									onclick={() => (showKey = !showKey)}
+								>
+									<Icon name={showKey ? 'eye-off' : 'eye'} size="1.15rem" />
+								</button>
+							</div>
+							<Button variant="glass" type="submit" data-focusable>{t('common.save')}</Button>
 						</div>
-						<Button variant="glass" type="submit" data-focusable>{t('common.save')}</Button>
-					</div>
-					<p class="status" aria-live="polite">
-						{#if tmdbSaved}<span class="ok">{t('settings.saved')}</span>{/if}
-					</p>
-					<a
-						class="ext"
-						href="https://www.themoviedb.org/settings/api"
-						target="_blank"
-						rel="noopener noreferrer"
-						data-focusable
-					>
-						{t('settings.metadata.getKey')}
-						<Icon name="external" size="0.95rem" />
-					</a>
-				</form>
+						<p class="status" aria-live="polite">
+							{#if tmdbSaved}<span class="ok">{t('settings.saved')}</span>{/if}
+						</p>
+						<a
+							class="ext"
+							href="https://www.themoviedb.org/settings/api"
+							target="_blank"
+							rel="noopener noreferrer"
+							data-focusable
+						>
+							{t('settings.metadata.getKey')}
+							<Icon name="external" size="0.95rem" />
+						</a>
+					</form>
+				{/if}
 				<div class="refresh">
 					<span class="muted small">{catalogSummary}</span>
 					<Button
 						variant="glass"
 						size="s"
 						icon="refresh"
-						disabled={refreshing || catalog.status === 'loading'}
+						disabled={refreshing || library.status === 'loading'}
 						onclick={refreshCatalog}
 						data-focusable
 					>
-						{refreshing || catalog.status === 'loading'
+						{refreshing || library.status === 'loading'
 							? t('settings.metadata.refreshing')
 							: t('settings.metadata.refresh')}
 					</Button>
@@ -335,15 +325,70 @@
 			</section>
 
 			<!-- Sync -------------------------------------------------------------------- -->
-			<section class="card glass">
-				{@render sectionHead('cloud', t('settings.sync.title'))}
+			<section class="card glass" id="cloud">
+				{@render sectionHead(
+					'cloud',
+					t('cloud.name'),
+					syncOn ? undefined : t('cloud.settings.pitch')
+				)}
 				<a class="link-row" href={path('/settings/sync')} data-focusable>
 					<span>
-						<strong>{t('settings.sync.manage')}</strong>
-						<span class="muted">{syncOn ? t('settings.sync.on') : t('settings.sync.off')}</span>
+						<strong>{syncOn ? t('cloud.settings.account') : t('cloud.banner.title')}</strong>
+						<span class="muted">
+							{syncOn
+								? (syncEngine.email ?? t('settings.sync.on')) +
+									(remote ? ` · ${t('cloud.settings.remote')}` : '')
+								: t('cloud.settings.notConnected')}
+						</span>
 					</span>
 					<Icon name="chevron-right" size="1.2rem" />
 				</a>
+				{#if syncOn && syncEngine.authMode === 'password'}
+					<div class="btns">
+						<Button variant="glass" size="s" icon="monitor" href={path('/activate')} data-focusable>
+							{t('account.tv.link')}
+						</Button>
+					</div>
+				{/if}
+			</section>
+
+			<!-- Storage ------------------------------------------------------------------- -->
+			<section class="card glass">
+				{@render sectionHead(
+					'grid',
+					t('cloud.storage.title'),
+					t(remote ? 'cloud.storage.bodyRemote' : 'cloud.storage.bodyLocal')
+				)}
+				<dl class="facts">
+					<div>
+						<dt>{t('cloud.storage.used')}</dt>
+						<dd>{storage ? formatBytes(storage.usage, i18n.locale) : '…'}</dd>
+					</div>
+					{#if remote}
+						<div>
+							<dt>{t('cloud.storage.cache')}</dt>
+							<dd>
+								{t('cloud.storage.cacheItems', {
+									n: cacheUse.items,
+									size: formatBytes(cacheUse.bytes, i18n.locale)
+								})}
+							</dd>
+						</div>
+					{/if}
+				</dl>
+				<div class="btns">
+					<Button
+						variant="glass"
+						size="s"
+						icon="trash"
+						disabled={clearing}
+						onclick={clearCache}
+						data-focusable
+					>
+						{clearing ? t('cloud.storage.clearing') : t('cloud.storage.clear')}
+					</Button>
+					{#if cleared}<span class="ok" role="status">{t('cloud.storage.cleared')}</span>{/if}
+				</div>
 			</section>
 		{/if}
 
@@ -495,9 +540,6 @@
 		border-color: var(--accent);
 		box-shadow: 0 0 0 3px var(--accent-soft);
 	}
-	.field[aria-invalid='true'] {
-		border-color: var(--danger);
-	}
 	.secret {
 		position: relative;
 		flex: 1;
@@ -532,9 +574,6 @@
 	}
 	.ok {
 		color: var(--success);
-	}
-	.bad {
-		color: var(--danger);
 	}
 	.ext {
 		display: inline-flex;

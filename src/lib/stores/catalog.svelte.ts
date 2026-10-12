@@ -32,9 +32,9 @@ import {
 	SAMPLE_EXTRA_SOURCES,
 	SAMPLE_SOURCE,
 	SAMPLE_SOURCE_NAMES,
-	isSampleSourceId,
-	sampleExtraCatalogs
-} from '#lib/sample/index.ts';
+	isSampleSourceId
+} from '#lib/sample/meta.ts';
+import { DEMO } from '#lib/demo.ts';
 import { user } from '#lib/stores/user.svelte.ts';
 import { i18n } from '#lib/i18n/index.svelte.ts';
 import type { TmdbIndex } from '#lib/tmdb/types.ts';
@@ -75,11 +75,13 @@ async function cacheSet(key: string, value: unknown): Promise<void> {
  * The demo source delivers three catalogs (three fictional providers). If the sources module
  * only loaded the primary one, add the others so the demo shows real merging.
  */
-function withSampleExtras(raws: RawCatalog[]): RawCatalog[] {
+async function withSampleExtras(raws: RawCatalog[]): Promise<RawCatalog[]> {
+	if (!DEMO) return raws.filter((r) => !isSampleSourceId(r.sourceId));
 	const primary = raws.find((r) => r.sourceId === SAMPLE_SOURCE.id);
 	if (!primary) return raws;
 	const have = new Set(raws.map((r) => r.sourceId));
 	if (SAMPLE_EXTRA_SOURCES.every((s) => have.has(s.id))) return raws;
+	const { sampleExtraCatalogs } = await import('#lib/sample/index.ts');
 	return [...raws, ...sampleExtraCatalogs(primary.fetchedAt).filter((c) => !have.has(c.sourceId))];
 }
 
@@ -109,6 +111,20 @@ class CatalogStore {
 	#buildSeq = 0;
 	#enrichAbort: AbortController | null = null;
 	#subscribed = false;
+	#loaded: Promise<void> | null = null;
+	#markLoaded: (() => void) | null = null;
+
+	/** Resolves once the first load finished (cache or refresh; ready or error). */
+	whenLoaded(): Promise<void> {
+		this.#loaded ??= new Promise<void>((r) => (this.#markLoaded = r));
+		if (this.status === 'ready' || this.status === 'error') this.#markLoaded?.();
+		return this.#loaded;
+	}
+
+	#signalLoaded() {
+		this.whenLoaded();
+		this.#markLoaded?.();
+	}
 
 	get titles(): Title[] {
 		return this.catalog.titles;
@@ -145,10 +161,23 @@ class CatalogStore {
 		if (cached?.titles?.length && this.catalog.builtAt === 0) {
 			this.catalog = cached;
 			this.status = 'ready';
+			this.#signalLoaded();
 			void this.refresh();
 			return;
 		}
 		await this.refresh();
+	}
+
+	/** Forget the merged catalog in memory (remote mode does not use it). */
+	reset() {
+		this.#enrichAbort?.abort();
+		this.#raws = [];
+		this.#episodes.clear();
+		this.catalog = EMPTY;
+		this.status = 'idle';
+		this.error = null;
+		this.#loaded = null;
+		this.#markLoaded = null;
 	}
 
 	/**
@@ -169,7 +198,7 @@ class CatalogStore {
 		this.error = null;
 		if (!this.catalog.titles.length && !this.catalog.channels.length) this.status = 'loading';
 		try {
-			this.#raws = withSampleExtras(await loadRawCatalogs({ force }));
+			this.#raws = await withSampleExtras(await loadRawCatalogs({ force }));
 			await this.#rebuild();
 			this.status = 'ready';
 			void cacheSet(CACHE_KEY, this.catalog);
@@ -179,6 +208,7 @@ class CatalogStore {
 			this.status = this.catalog.titles.length ? 'ready' : 'error';
 		} finally {
 			this.refreshing = false;
+			this.#signalLoaded();
 		}
 	}
 

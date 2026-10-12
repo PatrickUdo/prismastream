@@ -48,42 +48,181 @@ export function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
 	return out;
 }
 
-export async function deriveKeys(passphrase: string, saltB64: string, kdf: Kdf): Promise<SyncKeys> {
+/**
+ * masterKey = PBKDF2-SHA256(password, salt, iterations): 32 raw bytes. Zero-fill it when done;
+ * it is only kept in memory (and handed sealed to a tv during a device login).
+ */
+export async function deriveMasterKey(
+	password: string,
+	saltB64: string,
+	kdf: Kdf
+): Promise<Uint8Array<ArrayBuffer>> {
 	if (kdf.alg !== 'PBKDF2-SHA256' || kdf.iterations < MIN_KDF_ITERATIONS)
 		throw new Error('Unsupported KDF parameters');
 	const salt = base64ToBytes(saltB64);
 	const base = await crypto.subtle.importKey(
 		'raw',
-		te.encode(passphrase.normalize('NFKC')),
+		te.encode(password.normalize('NFKC')),
 		'PBKDF2',
 		false,
 		['deriveBits']
 	);
-	const bits = new Uint8Array(
+	return new Uint8Array(
 		await crypto.subtle.deriveBits(
 			{ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: kdf.iterations },
 			base,
 			256
 		)
 	);
-	const master = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
-	bits.fill(0);
+}
+
+/**
+ * From the masterKey via HKDF-SHA256 (salt = the account salt):
+ *   authKey  info "prismastream-auth/v1"      32 bytes, base64; the only value the server sees
+ *   enc      info "prismastream-sync/v1/enc"  AES-256-GCM document key (non-extractable)
+ *   mac      info "prismastream-sync/v1/mac"  HMAC-SHA256 fingerprint key (non-extractable)
+ * enc/mac are identical to the keys of the older passphrase flow for the same secret.
+ */
+export async function keysFromMaster(
+	master: Uint8Array<ArrayBuffer>,
+	saltB64: string
+): Promise<{ authKey: string; keys: SyncKeys }> {
+	const salt = base64ToBytes(saltB64);
+	const hk = await crypto.subtle.importKey('raw', master, 'HKDF', false, [
+		'deriveKey',
+		'deriveBits'
+	]);
 	const hkdf = (info: string) => ({ name: 'HKDF', hash: 'SHA-256', salt, info: te.encode(info) });
 	const enc = await crypto.subtle.deriveKey(
 		hkdf('prismastream-sync/v1/enc'),
-		master,
+		hk,
 		{ name: 'AES-GCM', length: 256 },
 		false,
 		['encrypt', 'decrypt']
 	);
 	const mac = await crypto.subtle.deriveKey(
 		hkdf('prismastream-sync/v1/mac'),
-		master,
+		hk,
 		{ name: 'HMAC', hash: 'SHA-256', length: 256 },
 		false,
 		['sign']
 	);
-	return { enc, mac };
+	const auth = new Uint8Array(
+		await crypto.subtle.deriveBits(hkdf('prismastream-auth/v1'), hk, 256)
+	);
+	const authKey = bytesToBase64(auth);
+	auth.fill(0);
+	return { authKey, keys: { enc, mac } };
+}
+
+export async function deriveKeys(passphrase: string, saltB64: string, kdf: Kdf): Promise<SyncKeys> {
+	const master = await deriveMasterKey(passphrase, saltB64, kdf);
+	try {
+		return (await keysFromMaster(master, saltB64)).keys;
+	} finally {
+		master.fill(0);
+	}
+}
+
+/** Random 16-byte salt (base64) for a new account or a new password. */
+export function randomSalt(): string {
+	return bytesToBase64(crypto.getRandomValues(new Uint8Array(16)));
+}
+
+// ---- Device login: hand the masterKey to a tv, sealed with ECDH P-256 ----------------------
+//
+// tv: generateDeviceKeyPair() → publicKey (raw, base64) to the server
+// phone: sealForDevice(publicKey, plaintext) → { sealedKey, ephemeralPublicKey }
+//   shared = ECDH(ephemeral private, tv public); key = HKDF-SHA256(shared, salt = 32 zero bytes,
+//   info "prismastream-device-link/v1") → AES-256-GCM; sealedKey = base64(iv(12) || ct+tag)
+// tv: openSealed(privateKey, sealedKey, ephemeralPublicKey) → plaintext
+
+const LINK_INFO = 'prismastream-device-link/v1';
+
+export async function generateDeviceKeyPair(): Promise<{
+	privateKey: CryptoKey;
+	publicKey: string;
+}> {
+	const pair = (await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, [
+		'deriveBits'
+	])) as CryptoKeyPair;
+	const raw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
+	return { privateKey: pair.privateKey, publicKey: bytesToBase64(raw) };
+}
+
+async function linkKey(priv: CryptoKey, peerPublicB64: string): Promise<CryptoKey> {
+	const peer = await crypto.subtle.importKey(
+		'raw',
+		base64ToBytes(peerPublicB64),
+		{ name: 'ECDH', namedCurve: 'P-256' },
+		false,
+		[]
+	);
+	const shared = new Uint8Array(
+		await crypto.subtle.deriveBits({ name: 'ECDH', public: peer }, priv, 256)
+	);
+	const hk = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+	shared.fill(0);
+	return crypto.subtle.deriveKey(
+		{ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: te.encode(LINK_INFO) },
+		hk,
+		{ name: 'AES-GCM', length: 256 },
+		false,
+		['encrypt', 'decrypt']
+	);
+}
+
+export async function sealForDevice(
+	devicePublicKeyB64: string,
+	plaintext: Uint8Array<ArrayBuffer>
+): Promise<{ sealedKey: string; ephemeralPublicKey: string }> {
+	const eph = (await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, [
+		'deriveBits'
+	])) as CryptoKeyPair;
+	const key = await linkKey(eph.privateKey, devicePublicKeyB64);
+	const iv = crypto.getRandomValues(new Uint8Array(12));
+	const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
+	const out = new Uint8Array(12 + ct.length);
+	out.set(iv);
+	out.set(ct, 12);
+	const ephPub = new Uint8Array(await crypto.subtle.exportKey('raw', eph.publicKey));
+	return { sealedKey: bytesToBase64(out), ephemeralPublicKey: bytesToBase64(ephPub) };
+}
+
+export async function openSealed(
+	privateKey: CryptoKey,
+	sealedKeyB64: string,
+	ephemeralPublicKeyB64: string
+): Promise<Uint8Array<ArrayBuffer>> {
+	try {
+		const key = await linkKey(privateKey, ephemeralPublicKeyB64);
+		const bytes = base64ToBytes(sealedKeyB64);
+		return new Uint8Array(
+			await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, key, bytes.slice(12))
+		);
+	} catch {
+		throw new DecryptError('Sealed key could not be opened');
+	}
+}
+
+/** What a phone hands to a tv (JSON, sealed): the masterKey plus the KDF parameters. */
+export interface LinkPayload {
+	v: 1;
+	masterKey: string;
+	salt: string;
+	iterations: number;
+	email?: string;
+}
+
+export function encodeLinkPayload(p: LinkPayload): Uint8Array<ArrayBuffer> {
+	return te.encode(JSON.stringify(p));
+}
+
+export function decodeLinkPayload(bytes: Uint8Array): LinkPayload {
+	const v = JSON.parse(td.decode(bytes)) as LinkPayload;
+	if (!v || v.v !== 1 || typeof v.masterKey !== 'string' || typeof v.salt !== 'string')
+		throw new DecryptError('Invalid link payload');
+	return v;
 }
 
 export function docAad(accountId: string, docId: string): Uint8Array<ArrayBuffer> {
@@ -228,3 +367,7 @@ export function passphraseStrength(pass: string): Strength {
 	) as Strength['score'];
 	return { score, bits, acceptable: p.length >= MIN_PASSPHRASE_LENGTH && score >= 2 };
 }
+
+/** Account password strength (same rules: ≥ 10 characters and at least "fair"). */
+export const passwordStrength = passphraseStrength;
+export const MIN_PASSWORD_LENGTH = MIN_PASSPHRASE_LENGTH;

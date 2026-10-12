@@ -8,7 +8,7 @@
 	import { goto } from '$app/navigation';
 	import { t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import Icon, { type IconName } from '#lib/components/Icon.svelte';
 	import Avatar from '#lib/components/Avatar.svelte';
@@ -44,7 +44,7 @@
 		if (p === '/' || p === '') return 'home';
 		const titleId = (page.params as Record<string, string | undefined>).id;
 		if (p.startsWith('/title/') && titleId) {
-			const kind = catalog.getTitle(titleId)?.kind;
+			const kind = library.peekKind(titleId);
 			return kind === 'series' ? 'series' : 'movies';
 		}
 		const first = p.split('/')[1] as Section;

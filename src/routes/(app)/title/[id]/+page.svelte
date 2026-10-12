@@ -4,15 +4,14 @@
 	similar titles.
 -->
 <script lang="ts">
-	import type { LangCode, Quality, Title } from '#lib/types.ts';
+	import type { LangCode, Quality, TitleCard as Card } from '#lib/types.ts';
 	import { page } from '$app/state';
 	import { languageName, nativeLanguageName } from '#lib/lang.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
-	import { sourceName } from '#lib/sources/index.svelte.ts';
-	import { similarTitles } from '#lib/recommend.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import { resource } from '#lib/catalog/resource.svelte.ts';
 	import Backdrop from '#lib/components/Backdrop.svelte';
 	import Poster from '#lib/components/Poster.svelte';
 	import Button from '#lib/components/Button.svelte';
@@ -48,8 +47,16 @@
 	} from '#lib/components/versions.ts';
 
 	const id = $derived(page.params.id ?? '');
-	const loading = $derived(catalog.status === 'idle' || catalog.status === 'loading');
-	const found = $derived(catalog.getTitle(id));
+	// Full title (variants, seasons) plus similar titles, from the provider of this mode.
+	const detail = resource(
+		() => (library.initialized && id ? `${library.version}|${id}` : null),
+		(_k, signal) => library.provider.title(id, { similar: true }, signal)
+	);
+	const current = $derived(detail.key?.endsWith(`|${id}`) ? detail.value : undefined);
+	const loading = $derived(
+		!current && (detail.loading || !library.initialized || library.status === 'loading')
+	);
+	const found = $derived(current ?? undefined);
 	// Kids mode: titles that are not kids-safe are not shown (see the blocked state below).
 	const blocked = $derived(!!found && !kids.isAllowed(found));
 	const title = $derived(blocked ? undefined : found);
@@ -59,16 +66,10 @@
 		title ? secondaryTitles(title, name) : { titles: [], original: false }
 	);
 
-	// ---- Series: lazy seasons ----------------------------------------------
-	let seasonsLoading = $state(false);
-	let requested = '';
-	$effect(() => {
-		const tt = title;
-		if (!tt || tt.kind !== 'series' || requested === tt.id) return;
-		requested = tt.id;
-		seasonsLoading = !tt.seasons;
-		void catalog.ensureSeasons(tt.id).finally(() => (seasonsLoading = false));
-	});
+	// Series: the provider returns the seasons with the title (loaded lazily when needed).
+	const seasonsLoading = $derived(
+		!!title && title.kind === 'series' && !title.seasons && detail.loading
+	);
 
 	// ---- Versions ------------------------------------------------------------
 	const prefs = $derived(profilePrefs());
@@ -112,7 +113,7 @@
 		options.qualities.map((q) => ({ value: q, label: qualityLabel(q) }))
 	);
 	const sourceOptions = $derived<ChoiceOption[]>(
-		options.sources.map((s) => ({ value: s, label: sourceName(s) }))
+		options.sources.map((s) => ({ value: s, label: library.sourceName(s) }))
 	);
 	const versionCount = $derived(variants.length);
 	const sourceCount = $derived(new Set(variants.map((v) => v.sourceId)).size);
@@ -205,7 +206,7 @@
 	const seasonLabel = (n: number) => (n === 0 ? t('detail.specials') : t('detail.season', { n }));
 
 	// ---- Extra info ------------------------------------------------------------
-	const similar = $derived(title ? similarTitles(title, kids.visibleTitles, 18) : []);
+	const similar = $derived(title ? kids.filterTitles(title.similar ?? []).slice(0, 18) : []);
 	const favorite = $derived(title ? user.isFavorite(title.id) : false);
 	const langNames = (langs: LangCode[]) =>
 		knownLangs(langs)
@@ -277,6 +278,21 @@
 			{/snippet}
 		</EmptyState>
 	</div>
+{:else if !title && detail.error}
+	<div class="page">
+		<EmptyState
+			icon="alert"
+			tone="error"
+			title={t('common.error')}
+			body={t(library.offline ? 'cloud.error.offline' : 'cloud.error.unknown')}
+		>
+			{#snippet actions()}
+				<Button variant="primary" icon="refresh" onclick={() => detail.reload()}>
+					{t('common.retry')}
+				</Button>
+			{/snippet}
+		</EmptyState>
+	</div>
 {:else if !title}
 	<div class="page">
 		<EmptyState icon="film" title={t('detail.notFound')} body={t('detail.notFoundBody')}>
@@ -328,7 +344,9 @@
 							<ul class="genres" aria-label={t('detail.genres')}>
 								{#each title.genres as g (g)}
 									<li>
-										<Chip size="s" href={libraryHref(title.kind, { genre: g })}>{g}</Chip>
+										<Chip size="s" href={libraryHref(title.kind, { genre: library.genreSlug(g) })}
+											>{g}</Chip
+										>
 									</li>
 								{/each}
 							</ul>
@@ -447,7 +465,7 @@
 										{t('detail.selected', {
 											lang: languageName(choice.audio ?? 'und', i18n.locale),
 											quality: qualityLabel(selected.quality),
-											source: sourceName(selected.sourceId)
+											source: library.sourceName(selected.sourceId)
 										})}
 									</span>
 									<code title={t('detail.streamLabel')}>{selected.label}</code>
@@ -500,7 +518,7 @@
 							{#if title.sourceIds.length}
 								<div>
 									<dt>{t('detail.sources')}</dt>
-									<dd>{title.sourceIds.map(sourceName).join(', ')}</dd>
+									<dd>{title.sourceIds.map((s) => library.sourceName(s)).join(', ')}</dd>
 								</div>
 							{/if}
 							{#if altTitles.length}
@@ -614,7 +632,7 @@
 			<!-- Similar ------------------------------------------------------- -->
 			{#if similar.length}
 				<div class="row-wrap">
-					<Row title={t('detail.similar')} items={similar} key={(x: Title) => x.id}>
+					<Row title={t('detail.similar')} items={similar} key={(x: Card) => x.id}>
 						{#snippet item(x)}
 							<TitleCard title={x} />
 						{/snippet}

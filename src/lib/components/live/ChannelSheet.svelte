@@ -14,15 +14,7 @@
 	import { formatRuntime } from '#lib/components/format.ts';
 	import ChannelLogo from './ChannelLogo.svelte';
 	import SourceList from './SourceList.svelte';
-	import {
-		MINUTE,
-		formatDay,
-		formatTimeRange,
-		isLiveAt,
-		minutesLeft,
-		nowNext,
-		progressAt
-	} from './epg.ts';
+	import { MINUTE, formatDay, formatTimeRange, isLiveAt, minutesLeft, progressAt } from './epg.ts';
 	import { shortEpg } from './live.svelte.ts';
 	import { liveHref } from '#lib/components/links.ts';
 
@@ -37,7 +29,7 @@
 
 	let { channel, slot, now, focusSources = false }: Props = $props();
 
-	const nn = $derived(nowNext(shortEpg.programmes(channel), now));
+	const nn = $derived(shortEpg.nowNext(channel, now));
 	const programme = $derived(slot ? slot.programme : nn.now);
 	const span = $derived(slot ?? (nn.now ? { start: nn.now.start, stop: nn.now.stop } : undefined));
 	const live = $derived(span ? isLiveAt(span, now) : true);

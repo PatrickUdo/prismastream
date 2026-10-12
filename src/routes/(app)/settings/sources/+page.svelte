@@ -5,7 +5,6 @@
 -->
 <script lang="ts">
 	import { t, i18n } from '#lib/i18n/index.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
 	import {
 		sources,
 		addSource,
@@ -23,6 +22,18 @@
 	import { credentials } from '#lib/sources/credentials.ts';
 	import Button from '#lib/components/Button.svelte';
 	import Icon from '#lib/components/Icon.svelte';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import { path } from '#lib/components/links.ts';
+	import RemoteSources from './RemoteSources.svelte';
+	import { kids } from '#lib/stores/kids.svelte.ts';
+	import KidsLock from '#lib/components/KidsLock.svelte';
+
+	/**
+	 * Web build with a backend: IPTV servers are usually plain http and never send CORS
+	 * headers, so a direct fetch from the browser fails. Sources are managed on the backend
+	 * (remote mode); without an account we ask to log in first.
+	 */
+	const webGate = $derived(!sources.native && library.mode === 'local' && !!library.backendUrl);
 
 	interface FormState {
 		id?: string;
@@ -233,7 +244,7 @@
 			if (form.id) await updateSource(form.id, toPatch(form));
 			else await addSource(toInput(form));
 			closeForm();
-			void catalog.refresh();
+			void library.refresh();
 		} catch (err) {
 			formError = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -243,14 +254,14 @@
 
 	async function toggle(s: SourceEntry) {
 		await updateSource(s.id, { enabled: !s.enabled });
-		void catalog.refresh();
+		void library.refresh();
 	}
 
 	async function refreshOne(s: SourceEntry) {
 		refreshing[s.id] = true;
 		try {
 			await refreshSource(s.id);
-			await catalog.refresh();
+			await library.refresh();
 		} finally {
 			refreshing[s.id] = false;
 		}
@@ -260,7 +271,7 @@
 		refreshingAll = true;
 		try {
 			await loadRawCatalogs({ force: true });
-			await catalog.refresh();
+			await library.refresh();
 		} finally {
 			refreshingAll = false;
 		}
@@ -271,7 +282,7 @@
 		confirmTarget = null;
 		if (!target) return;
 		await removeSource(target.id);
-		void catalog.refresh();
+		void library.refresh();
 	}
 
 	async function saveProxy(e: SubmitEvent) {
@@ -391,78 +402,108 @@
 	</li>
 {/snippet}
 
-<div class="page sources-page">
-	<header class="head">
-		<div>
-			<p class="eyebrow">{t('nav.settings')}</p>
-			<h1>{t('sources.title')}</h1>
-			<p class="sub">{t('sources.subtitle')}</p>
-		</div>
-		<div class="head-actions">
-			<Button
-				icon="refresh"
-				disabled={refreshingAll || sources.busy}
-				onclick={refreshAll}
-				data-focusable>{t('sources.refreshAll')}</Button
-			>
-			<Button variant="primary" icon="plus" onclick={openAdd} data-focusable
-				>{t('sources.add')}</Button
-			>
-		</div>
-	</header>
-
-	<p class="notice glass"><Icon name="info" size="1.1rem" /> <span>{t('sources.legal')}</span></p>
-	{#if !credentials.persistent}
-		<p class="notice warn glass">
-			<Icon name="alert" size="1.1rem" /> <span>{t('sources.storage.memoryOnly')}</span>
-		</p>
-	{/if}
-
-	{#if userSources.length}
-		<ul class="list">
-			{#each userSources as s (s.id)}
-				{@render sourceCard(s)}
-			{/each}
-		</ul>
-	{:else}
+{#if kids.restricted}
+	<KidsLock />
+{:else if library.mode === 'remote'}
+	<RemoteSources />
+{:else if webGate}
+	<div class="page sources-page">
+		<header class="head">
+			<div>
+				<p class="eyebrow">{t('nav.settings')}</p>
+				<h1>{t('sources.title')}</h1>
+				<p class="sub">{t('sources.subtitle')}</p>
+			</div>
+		</header>
 		<div class="empty glass">
-			<Icon name="source" size="2rem" />
-			<p>{t('sources.empty')}</p>
-			<Button variant="primary" icon="plus" onclick={openAdd} data-focusable
-				>{t('sources.add')}</Button
-			>
+			<Icon name="lock" size="2rem" />
+			<p><strong>{t('cloud.sources.loginTitle')}</strong></p>
+			<p>{t('cloud.sources.loginBody')}</p>
+			<Button variant="primary" icon="user" href={path('/settings/sync')} data-focusable>
+				{t('cloud.login')}
+			</Button>
 		</div>
-	{/if}
-
-	{#if sampleSource}
-		<ul class="list sample">
-			{@render sourceCard(sampleSource)}
-		</ul>
-	{/if}
-
-	{#if !sources.native}
-		<section class="proxy glass" aria-labelledby="proxy-title">
-			<h2 id="proxy-title">{t('sources.proxy.title')}</h2>
-			<p class="hint">{t('sources.proxy.body')}</p>
-			<form class="proxy-row" onsubmit={saveProxy}>
-				<label class="sr-only" for="global-proxy">{t('sources.proxy.title')}</label>
-				<input
-					id="global-proxy"
-					type="url"
-					inputmode="url"
-					autocomplete="off"
-					spellcheck="false"
-					placeholder="http://localhost:8787/proxy?url="
-					bind:value={proxyDraft}
-					data-focusable
-				/>
-				<Button type="submit" size="s" data-focusable
-					>{proxySaved ? t('sources.proxy.saved') : t('sources.proxy.save')}</Button
+		{#if sampleSource}
+			<ul class="list sample">
+				{@render sourceCard(sampleSource)}
+			</ul>
+		{/if}
+	</div>
+{:else}
+	<div class="page sources-page">
+		<header class="head">
+			<div>
+				<p class="eyebrow">{t('nav.settings')}</p>
+				<h1>{t('sources.title')}</h1>
+				<p class="sub">{t('sources.subtitle')}</p>
+			</div>
+			<div class="head-actions">
+				<Button
+					icon="refresh"
+					disabled={refreshingAll || sources.busy}
+					onclick={refreshAll}
+					data-focusable>{t('sources.refreshAll')}</Button
 				>
-			</form>
-		</section>
-	{/if}
-</div>
+				<Button variant="primary" icon="plus" onclick={openAdd} data-focusable
+					>{t('sources.add')}</Button
+				>
+			</div>
+		</header>
+
+		<p class="notice glass"><Icon name="info" size="1.1rem" /> <span>{t('sources.legal')}</span></p>
+		{#if !credentials.persistent}
+			<p class="notice warn glass">
+				<Icon name="alert" size="1.1rem" /> <span>{t('sources.storage.memoryOnly')}</span>
+			</p>
+		{/if}
+
+		{#if userSources.length}
+			<ul class="list">
+				{#each userSources as s (s.id)}
+					{@render sourceCard(s)}
+				{/each}
+			</ul>
+		{:else}
+			<div class="empty glass">
+				<Icon name="source" size="2rem" />
+				<p>{t('sources.empty')}</p>
+				<Button variant="primary" icon="plus" onclick={openAdd} data-focusable
+					>{t('sources.add')}</Button
+				>
+			</div>
+		{/if}
+
+		{#if sampleSource}
+			<ul class="list sample">
+				{@render sourceCard(sampleSource)}
+			</ul>
+		{/if}
+
+		{#if !sources.native}
+			<details class="proxy glass">
+				<summary data-focusable>{t('sources.form.advanced')}</summary>
+				<h2 id="proxy-title">{t('sources.proxy.title')}</h2>
+				<p class="hint">{t('sources.proxy.body')}</p>
+				<form class="proxy-row" onsubmit={saveProxy}>
+					<label class="sr-only" for="global-proxy">{t('sources.proxy.title')}</label>
+					<input
+						id="global-proxy"
+						type="url"
+						inputmode="url"
+						autocomplete="off"
+						spellcheck="false"
+						placeholder="http://localhost:8787/proxy?url="
+						bind:value={proxyDraft}
+						data-focusable
+					/>
+					<Button type="submit" size="s" data-focusable
+						>{proxySaved ? t('sources.proxy.saved') : t('sources.proxy.save')}</Button
+					>
+				</form>
+			</details>
+		{/if}
+	</div>
+{/if}
 
 <dialog
 	bind:this={formDialog}

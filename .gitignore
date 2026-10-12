@@ -43,3 +43,4 @@ vite.config.ts.timestamp-*
 # Tool caches
 /.impeccable/
 /.claude/settings.local.json
+!.env.production

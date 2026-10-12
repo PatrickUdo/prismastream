@@ -16,11 +16,11 @@ function foldGroup(s: string): string {
 	return s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
-export function isKidsTitle(title: Title): boolean {
+export function isKidsTitle(title: Pick<Title, 'kidsSafe'>): boolean {
 	return title.kidsSafe === true;
 }
 
-export function isKidsChannel(channel: Channel): boolean {
+export function isKidsChannel(channel: Pick<Channel, 'group'>): boolean {
 	return KIDS_GROUP.test(foldGroup(channel.group ?? ''));
 }
 
@@ -75,22 +75,25 @@ class KidsStore {
 		return this.active && this.#unlockedFor !== user.activeId;
 	}
 
-	isAllowed(title: Title | undefined): boolean {
+	isAllowed(title: Pick<Title, 'kidsSafe'> | undefined): boolean {
 		if (!title) return false;
 		return !this.active || isKidsTitle(title);
 	}
 
-	filterTitles<T extends Title | undefined>(titles: T[]): T[] {
-		return this.active ? titles.filter((t) => !!t && isKidsTitle(t)) : titles;
+	/** Kids-safe titles only in kids mode; undefined entries are always dropped. */
+	filterTitles<T extends Pick<Title, 'kidsSafe'>>(titles: (T | undefined)[]): T[] {
+		return titles.filter((t): t is T => !!t && (!this.active || isKidsTitle(t)));
 	}
 
-	isChannelAllowed(channel: Channel | undefined): boolean {
+	isChannelAllowed(channel: Pick<Channel, 'group'> | undefined): boolean {
 		if (!channel) return false;
 		return !this.active || isKidsChannel(channel);
 	}
 
-	filterChannels(channels: Channel[]): Channel[] {
-		return this.active ? channels.filter(isKidsChannel) : channels;
+	filterChannels<T extends Pick<Channel, 'group'>>(channels: T[]): T[] {
+		return this.active
+			? channels.filter((c) => !!c && isKidsChannel(c))
+			: channels.filter((c) => !!c);
 	}
 
 	/** Unlock kids mode for this session without a PIN (no adult PIN exists). */

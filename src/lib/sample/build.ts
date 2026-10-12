@@ -40,7 +40,8 @@ export const STREAMS = {
 	appleMultiAudio:
 		'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8',
 	// Was Bitmovin's Sintel demo, which now returns 403; Apple's TS bipbop has multi-audio + subtitles.
-	sintel: 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8',
+	sintel:
+		'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8',
 	mux2: 'https://test-streams.mux.dev/test_001/stream.m3u8'
 };
 const VOD_STREAMS = [STREAMS.mux, STREAMS.sintel, STREAMS.mux2, STREAMS.appleMultiAudio];

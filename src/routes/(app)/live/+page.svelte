@@ -6,8 +6,9 @@
 	import type { Channel, EpgProgramme } from '#lib/types.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
+	import CloudBanner from '#lib/components/CloudBanner.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Modal from '#lib/components/Modal.svelte';
@@ -40,10 +41,9 @@
 	} from '#lib/components/live/live.svelte.ts';
 
 	const now = $derived(liveClock.now);
-	const loading = $derived(
-		catalog.status === 'idle' || (catalog.status === 'loading' && !catalog.channels.length)
-	);
-	const all = $derived(kids.visibleChannels);
+	$effect(() => library.ensureChannels());
+	const loading = $derived(!library.initialized || library.channelsLoading);
+	const all = $derived(library.channels);
 
 	// ---- filters ---------------------------------------------------------------------------
 
@@ -113,7 +113,7 @@
 
 	const lastChannel = $derived.by(() => {
 		const id = user.data.lastChannelId;
-		const ch = id ? catalog.getChannel(id) : undefined;
+		const ch = id ? library.getChannel(id) : undefined;
 		return ch && kids.isChannelAllowed(ch) ? ch : undefined;
 	});
 	const featured = $derived.by(() => {
@@ -162,11 +162,12 @@
 			{/if}
 			<h1>{t('live.title')}</h1>
 		</div>
-		{#if catalog.refreshing && !loading}
+		{#if library.refreshing && !loading}
 			<span class="refreshing" role="status">{t('live.refreshing')}</span>
 		{/if}
 	</header>
 
+	<CloudBanner />
 	{#if loading}
 		<div class="skeleton" aria-busy="true" aria-label={t('common.loading')}>
 			<div class="sk-hero">
@@ -189,15 +190,20 @@
 				{/each}
 			</div>
 		</div>
-	{:else if catalog.status === 'error' && !all.length}
+	{:else if library.channelsError && !all.length}
 		<EmptyState
 			icon="alert"
 			tone="error"
 			title={t('live.errorTitle')}
-			body={catalog.error ?? t('common.error')}
+			body={library.channelsError ?? t('common.error')}
 		>
 			{#snippet actions()}
-				<Button variant="primary" icon="refresh" onclick={() => catalog.refresh()}>
+				<Button
+					variant="primary"
+					icon="refresh"
+					onclick={() =>
+						library.mode === 'remote' ? library.ensureChannels(true) : library.refresh()}
+				>
 					{t('common.retry')}
 				</Button>
 			{/snippet}

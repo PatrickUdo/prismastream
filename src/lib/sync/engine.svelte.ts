@@ -15,6 +15,7 @@ import {
 	SyncApi,
 	SyncApiError,
 	SyncNetworkError,
+	isPrismaService,
 	normalizeServerUrl,
 	type Credentials,
 	type DeviceInfo,
@@ -23,8 +24,18 @@ import {
 import {
 	DecryptError,
 	KDF_ITERATIONS,
+	decodeLinkPayload,
 	decryptJson,
 	deriveKeys,
+	deriveMasterKey,
+	encodeLinkPayload,
+	generateDeviceKeyPair,
+	keysFromMaster,
+	openSealed,
+	randomSalt,
+	sealForDevice,
+	bytesToBase64,
+	base64ToBytes,
 	docAad,
 	encryptJson,
 	fingerprint,
@@ -72,6 +83,14 @@ export type SyncErrorCode =
 	| 'invalidCode'
 	| 'deviceLimit'
 	| 'signupDisabled'
+	| 'invalidSignupCode'
+	| 'invalidLogin'
+	| 'emailTaken'
+	| 'invalidEmail'
+	| 'wrongPassword'
+	| 'codeExpired'
+	| 'denied'
+	| 'needPassword'
 	| 'rateLimited'
 	| 'quota'
 	| 'server'
@@ -88,6 +107,9 @@ interface SyncConfig {
 	joining?: boolean;
 	/** Untouched default profile of a joining device; dropped once remote profiles arrive. */
 	pristineProfileId?: string | null;
+	/** E-mail of an e-mail + password account (absent for the older passphrase accounts). */
+	email?: string;
+	auth?: 'password';
 }
 
 interface DocState {
@@ -171,6 +193,12 @@ export class SyncEngine {
 	accountId = $state<string | null>(null);
 	deviceId = $state<string | null>(null);
 	deviceName = $state('');
+	/** E-mail of the account (e-mail + password accounts), else null. */
+	email = $state<string | null>(null);
+	/** 'password' for e-mail + password accounts, 'passphrase' for the older flow. */
+	authMode = $state<'password' | 'passphrase' | null>(null);
+	/** The masterKey is in memory (this session logged in with the password): a tv can be approved without asking it again. */
+	hasMasterKey = $state(false);
 
 	get configured(): boolean {
 		return this.accountId !== null;
@@ -179,6 +207,7 @@ export class SyncEngine {
 	#config: SyncConfig | null = null;
 	#token: string | null = null;
 	#keys: SyncKeys | null = null;
+	#master: Uint8Array<ArrayBuffer> | null = null;
 	#api: SyncApi | null = null;
 	#states = new Map<string, DocState>();
 	#cursor = 0;
@@ -200,6 +229,22 @@ export class SyncEngine {
 	#pollAbort: AbortController | null = null;
 	#wake: (() => void) | null = null;
 	#sourcesNeedFetch = false;
+	#ready: Promise<void> | null = null;
+	#resolveReady: (() => void) | null = null;
+
+	/** Resolves once init() has finished (configured or not). */
+	whenReady(): Promise<void> {
+		this.#ready ??= new Promise<void>((r) => (this.#resolveReady = r));
+		return this.#ready;
+	}
+
+	/**
+	 * Bearer token of this device (the same token authenticates the catalog backend), or null.
+	 * Never log or persist it elsewhere.
+	 */
+	authToken(): string | null {
+		return this.#token;
+	}
 
 	// ---- lifecycle --------------------------------------------------------------
 
@@ -217,6 +262,9 @@ export class SyncEngine {
 			console.warn('[sync] init failed:', (err as Error)?.name ?? 'error');
 			this.status = 'error';
 			this.error = 'unknown';
+		} finally {
+			this.whenReady();
+			this.#resolveReady?.();
 		}
 	}
 
@@ -226,6 +274,8 @@ export class SyncEngine {
 		this.accountId = cfg.accountId;
 		this.deviceId = cfg.deviceId;
 		this.deviceName = cfg.deviceName;
+		this.email = cfg.email ?? null;
+		this.authMode = cfg.auth === 'password' ? 'password' : 'passphrase';
 		this.#api = new SyncApi(cfg.serverUrl);
 		this.#token = await secrets.getToken();
 		this.#keys = keys ?? (await vault.get<SyncKeys>('keys')) ?? null;
@@ -697,7 +747,10 @@ export class SyncEngine {
 	}
 
 	#applyProfiles(doc: ProfilesDoc) {
-		const target = profilesFromDoc(doc);
+		// Defensive: a malformed remote entry must never become an `undefined` profile.
+		const target = profilesFromDoc(doc).filter(
+			(p): p is Profile => !!p && typeof p === 'object' && typeof p.id === 'string' && !!p.id
+		);
 		if (target.length === 0) return;
 		const current = $state.snapshot(user.profiles) as Profile[];
 		const jobs: Promise<unknown>[] = [];
@@ -876,7 +929,13 @@ export class SyncEngine {
 		await api.putDoc(token, KEYCHECK_ID, version, { blob });
 	}
 
-	async #storeNew(creds: Credentials, serverUrl: string, deviceName: string, joining: boolean) {
+	async #storeNew(
+		creds: Credentials,
+		serverUrl: string,
+		deviceName: string,
+		joining: boolean,
+		extra: Pick<SyncConfig, 'email' | 'auth'> = {}
+	) {
 		await this.#teardownLocal();
 		let pristineProfileId: string | null = null;
 		if (joining) {
@@ -892,7 +951,8 @@ export class SyncEngine {
 			salt: creds.salt,
 			kdf: creds.kdf,
 			joining,
-			pristineProfileId
+			pristineProfileId,
+			...extra
 		};
 		await secrets.setToken(creds.token);
 		await vault.set('config', cfg);
@@ -915,20 +975,32 @@ export class SyncEngine {
 		if (!url) return false;
 		try {
 			const r = await new SyncApi(url).health();
-			return r.body?.service === 'prismastream-sync';
+			return isPrismaService(r.body?.service);
 		} catch {
 			return false;
 		}
 	}
 
-	/** Creates a new sync account on `serverUrl`, protected by `passphrase`. */
-	async createAccount(serverUrl: string, passphrase: string, deviceName = defaultDeviceName()) {
+	/**
+	 * Creates a new account on `serverUrl`, protected by `passphrase`. `signupCode` is the
+	 * invitation code the backend requires when open signup is off.
+	 */
+	async createAccount(
+		serverUrl: string,
+		passphrase: string,
+		deviceName = defaultDeviceName(),
+		signupCode?: string
+	) {
 		const url = normalizeServerUrl(serverUrl);
 		if (!url) throw this.#fail('invalidUrl');
 		const api = new SyncApi(url);
 		await this.#ensureServer(api);
 		const creds = await this.#guard(() =>
-			api.createAccount(deviceName, { alg: 'PBKDF2-SHA256', iterations: KDF_ITERATIONS })
+			api.createAccount(
+				deviceName,
+				{ alg: 'PBKDF2-SHA256', iterations: KDF_ITERATIONS },
+				signupCode?.trim() || undefined
+			)
 		);
 		const keys = await deriveKeys(passphrase, creds.salt, creds.kdf);
 		await this.#guard(() => this.#writeKeycheck(api, creds.token, creds.accountId, keys));
@@ -960,6 +1032,340 @@ export class SyncEngine {
 		await this.#saveKeys(keys);
 		await this.#activate(cfg, keys);
 		return true;
+	}
+
+	// ---- e-mail + password accounts ------------------------------------------------------
+
+	#apiFor(serverUrl: string): SyncApi {
+		const url = normalizeServerUrl(serverUrl);
+		if (!url) throw this.#fail('invalidUrl');
+		return new SyncApi(url);
+	}
+
+	/** Maps login/register errors to a code (generic for wrong credentials). */
+	async #authGuard<T>(fn: () => Promise<T>): Promise<T> {
+		try {
+			return await fn();
+		} catch (err) {
+			if (err instanceof SyncApiError) {
+				const c = err.code;
+				if (err.status === 429 || c === 'rate_limited' || c === 'locked' || c === 'account_locked')
+					throw this.#fail('rateLimited');
+				if (c === 'email_taken' || c === 'email_exists' || err.status === 409)
+					throw this.#fail('emailTaken');
+				if (c === 'invalid_email') throw this.#fail('invalidEmail');
+				if (/signup/.test(c))
+					throw this.#fail(c === 'signup_disabled' ? 'signupDisabled' : 'invalidSignupCode');
+				if (err.status === 400 || err.status === 401 || err.status === 403)
+					throw this.#fail('invalidLogin');
+			}
+			return this.#guard(() => Promise.reject(err));
+		}
+	}
+
+	/** Creates an e-mail + password account (invitation code required by the server). */
+	async register(
+		serverUrl: string,
+		email: string,
+		password: string,
+		signupCode: string,
+		deviceName = defaultDeviceName()
+	): Promise<void> {
+		const api = this.#apiFor(serverUrl);
+		const mail = email.trim().toLowerCase();
+		const salt = randomSalt();
+		const kdf: Kdf = { alg: 'PBKDF2-SHA256', iterations: KDF_ITERATIONS };
+		const master = await deriveMasterKey(password, salt, kdf);
+		const { authKey, keys } = await keysFromMaster(master, salt);
+		const session = await this.#authGuard(() =>
+			api.register({
+				email: mail,
+				authKey,
+				salt,
+				iterations: kdf.iterations,
+				signupCode: signupCode.trim() || undefined,
+				deviceName
+			})
+		);
+		await this.#guard(() => this.#writeKeycheck(api, session.token, session.accountId, keys));
+		const cfg = await this.#storeNew({ ...session, salt, kdf }, api.base, deviceName, false, {
+			email: mail,
+			auth: 'password'
+		});
+		await this.#saveKeys(keys);
+		this.#setMaster(master);
+		await this.#activate(cfg, keys);
+	}
+
+	/** Logs this device in with e-mail and password; sync starts right away. */
+	async login(
+		serverUrl: string,
+		email: string,
+		password: string,
+		deviceName = defaultDeviceName()
+	): Promise<void> {
+		const api = this.#apiFor(serverUrl);
+		const mail = email.trim().toLowerCase();
+		const pre = await this.#authGuard(() => api.prelogin(mail));
+		const kdf: Kdf = { alg: 'PBKDF2-SHA256', iterations: pre.iterations };
+		let master: Uint8Array<ArrayBuffer>;
+		try {
+			master = await deriveMasterKey(password, pre.salt, kdf);
+		} catch {
+			throw this.#fail('server');
+		}
+		const { authKey, keys } = await keysFromMaster(master, pre.salt);
+		const session = await this.#authGuard(() => api.login({ email: mail, authKey, deviceName }));
+		const ok = await this.#guard(() =>
+			this.#verifyKey(api, session.token, session.accountId, keys)
+		);
+		if (!ok) {
+			master.fill(0);
+			await api.logout(session.token).catch(() => undefined);
+			throw this.#fail('decrypt');
+		}
+		const cfg = await this.#storeNew(
+			{ ...session, salt: pre.salt, kdf },
+			api.base,
+			deviceName,
+			true,
+			{
+				email: mail,
+				auth: 'password'
+			}
+		);
+		await this.#saveKeys(keys);
+		this.#setMaster(master);
+		await this.#activate(cfg, keys);
+	}
+
+	/**
+	 * Re-enter the password on a logged-in device whose key no longer fits (the password was
+	 * changed on another device) or is missing. Returns false on a wrong password.
+	 */
+	async unlockWithPassword(password: string): Promise<boolean> {
+		const cfg = this.#config;
+		if (!this.#api || !this.#token || !cfg?.email) return false;
+		const pre = await this.#authGuard(() => this.#api!.prelogin(cfg.email!));
+		const kdf: Kdf = { alg: 'PBKDF2-SHA256', iterations: pre.iterations };
+		const master = await deriveMasterKey(password, pre.salt, kdf);
+		const { keys } = await keysFromMaster(master, pre.salt);
+		const ok = await this.#guard(() =>
+			this.#verifyKey(this.#api!, this.#token!, cfg.accountId, keys)
+		);
+		if (!ok) {
+			master.fill(0);
+			this.error = 'wrongPassword';
+			return false;
+		}
+		this.#config = { ...cfg, salt: pre.salt, kdf };
+		await vault.set('config', this.#config);
+		this.#keys = keys;
+		await this.#saveKeys(keys);
+		this.#setMaster(master);
+		this.locked = false;
+		this.status = 'idle';
+		this.error = null;
+		this.#startBackground();
+		void this.syncNow();
+		return true;
+	}
+
+	/** Log out: revoke this device's token on the server and forget the account locally. */
+	async logout(): Promise<void> {
+		await this.#flushPush().catch(() => undefined);
+		if (this.#api && this.#token) {
+			if (this.authMode === 'password') await this.#api.logout(this.#token).catch(() => undefined);
+			else if (this.deviceId)
+				await this.#api.removeDevice(this.#token, this.deviceId).catch(() => undefined);
+		}
+		await this.#teardownLocal();
+	}
+
+	/** The masterKey: in memory, or derived again from the password (and verified). */
+	async #masterFor(password?: string): Promise<Uint8Array<ArrayBuffer>> {
+		if (this.#master) return this.#master;
+		const cfg = this.#config;
+		if (!password || !cfg || !this.#api || !this.#token) throw this.#fail('needPassword');
+		const master = await deriveMasterKey(password, cfg.salt, cfg.kdf);
+		const { keys } = await keysFromMaster(master, cfg.salt);
+		const ok = await this.#guard(() =>
+			this.#verifyKey(this.#api!, this.#token!, cfg.accountId, keys)
+		);
+		if (!ok) {
+			master.fill(0);
+			throw this.#fail('wrongPassword');
+		}
+		this.#setMaster(master);
+		return master;
+	}
+
+	/**
+	 * Change the password: re-encrypt every E2E doc with the new key, then tell the server the
+	 * new authKey. On a failure the docs are put back under the old key.
+	 */
+	async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+		this.#requireReady();
+		const cfg = this.#config;
+		if (!cfg || cfg.auth !== 'password' || !this.#keys) throw this.#fail('unauthorized');
+		const api = this.#api!;
+		const token = this.#token!;
+		const oldMaster = await deriveMasterKey(oldPassword, cfg.salt, cfg.kdf);
+		const old = await keysFromMaster(oldMaster, cfg.salt);
+		oldMaster.fill(0);
+		if (!(await this.#guard(() => this.#verifyKey(api, token, cfg.accountId, old.keys))))
+			throw this.#fail('wrongPassword');
+		const newSalt = randomSalt();
+		const newKdf: Kdf = { alg: 'PBKDF2-SHA256', iterations: KDF_ITERATIONS };
+		const newMaster = await deriveMasterKey(newPassword, newSalt, newKdf);
+		const next = await keysFromMaster(newMaster, newSalt);
+
+		await this.#flushPush().catch(() => undefined);
+		await this.#exclusive(async () => {
+			const rekey = async (from: SyncKeys, to: SyncKeys, only?: Set<string>) => {
+				const done: string[] = [];
+				let since = 0;
+				for (let page = 0; page < 200; page++) {
+					const res = await api.changes(token, since);
+					for (const r of res.docs) {
+						if (r.deleted || !r.blob || (only && !only.has(r.docId))) continue;
+						const aad = docAad(cfg.accountId, r.docId);
+						const value = await decryptJson(from.enc, aad, r.blob);
+						const blob = await encryptJson(to.enc, aad, value);
+						const put = await api.putDoc(token, r.docId, r.version, { blob });
+						if ('conflict' in put) throw this.#fail('server');
+						const st = this.#states.get(r.docId);
+						if (st) {
+							st.version = put.version;
+							this.#persist(r.docId);
+						}
+						done.push(r.docId);
+					}
+					since = res.cursor;
+					if (!res.more) break;
+				}
+				return done;
+			};
+			const changed = await this.#guard(() => rekey(old.keys, next.keys));
+			try {
+				await this.#guard(() =>
+					api.changePassword(token, {
+						oldAuthKey: old.authKey,
+						newAuthKey: next.authKey,
+						newSalt,
+						newIterations: newKdf.iterations
+					})
+				);
+			} catch (err) {
+				await rekey(next.keys, old.keys, new Set(changed)).catch(() => undefined);
+				newMaster.fill(0);
+				throw err;
+			}
+			this.#config = { ...cfg, salt: newSalt, kdf: newKdf };
+			await vault.set('config', this.#config);
+			this.#keys = next.keys;
+			await this.#saveKeys(next.keys);
+			this.#setMaster(newMaster);
+		});
+	}
+
+	// ---- tv login (device code + sealed masterKey) ---------------------------------------
+
+	/**
+	 * Start a device login on a tv: returns the code to show and `wait()`, which polls until a
+	 * logged-in device approved it, then logs this device in. Abort with the signal.
+	 */
+	async startDeviceLogin(
+		serverUrl: string,
+		deviceName = defaultDeviceName()
+	): Promise<{
+		userCode: string;
+		verifyUrl?: string;
+		expiresAt: number;
+		wait: (signal: AbortSignal) => Promise<void>;
+	}> {
+		const api = this.#apiFor(serverUrl);
+		const pair = await generateDeviceKeyPair();
+		const dc = await this.#guard(() => api.deviceCode({ publicKey: pair.publicKey, deviceName }));
+		const expiresAt = Date.now() + Math.max(60, dc.expiresIn || 600) * 1000;
+		let interval = Math.max(2, dc.interval || 3) * 1000;
+		const wait = async (signal: AbortSignal) => {
+			for (;;) {
+				if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+				if (Date.now() > expiresAt) throw this.#fail('codeExpired');
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, interval);
+					signal.addEventListener('abort', () => (clearTimeout(timer), resolve()), { once: true });
+				});
+				if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+				let r: Awaited<ReturnType<SyncApi['deviceToken']>>;
+				try {
+					r = await api.deviceToken(dc.deviceCode);
+				} catch (err) {
+					if (err instanceof SyncNetworkError) continue;
+					if (err instanceof SyncApiError) {
+						if (/expired/.test(err.code) || err.status === 410) throw this.#fail('codeExpired');
+						if (/denied/.test(err.code)) throw this.#fail('denied');
+					}
+					return this.#guard(() => Promise.reject(err));
+				}
+				if ('pending' in r) {
+					if (r.slowDown) interval += 2000;
+					continue;
+				}
+				const plain = await openSealed(pair.privateKey, r.sealedKey, r.ephemeralPublicKey);
+				const payload = decodeLinkPayload(plain);
+				plain.fill(0);
+				const master = base64ToBytes(payload.masterKey);
+				const kdf: Kdf = { alg: 'PBKDF2-SHA256', iterations: payload.iterations };
+				const { keys } = await keysFromMaster(master, payload.salt);
+				const ok = await this.#guard(() => this.#verifyKey(api, r.token, r.accountId, keys));
+				if (!ok) {
+					master.fill(0);
+					throw this.#fail('decrypt');
+				}
+				const cfg = await this.#storeNew(
+					{ accountId: r.accountId, deviceId: r.deviceId, token: r.token, salt: payload.salt, kdf },
+					api.base,
+					deviceName,
+					true,
+					{ email: payload.email, auth: 'password' }
+				);
+				await this.#saveKeys(keys);
+				this.#setMaster(master);
+				await this.#activate(cfg, keys);
+				return;
+			}
+		};
+		return { userCode: dc.userCode, verifyUrl: dc.verifyUrl, expiresAt, wait };
+	}
+
+	/** The device that asks to log in with `userCode` (shown before approving). */
+	async lookupDevice(userCode: string): Promise<{ deviceName: string; publicKey: string }> {
+		this.#requireReady();
+		return this.#guard(() =>
+			this.#api!.lookupDeviceCode(this.#token!, normalizeUserCode(userCode))
+		);
+	}
+
+	/** Approve a tv: seal the masterKey to its public key. `password` when it is not in memory. */
+	async approveDevice(userCode: string, publicKey: string, password?: string): Promise<void> {
+		this.#requireReady();
+		const cfg = this.#config!;
+		if (cfg.auth !== 'password') throw this.#fail('unauthorized');
+		const master = await this.#masterFor(password);
+		const payload = encodeLinkPayload({
+			v: 1,
+			masterKey: bytesToBase64(master),
+			salt: cfg.salt,
+			iterations: cfg.kdf.iterations,
+			email: cfg.email
+		});
+		const sealed = await sealForDevice(publicKey, payload);
+		payload.fill(0);
+		await this.#guard(() =>
+			this.#api!.approveDeviceCode(this.#token!, normalizeUserCode(userCode), sealed)
+		);
 	}
 
 	/** Re-enters the passphrase on a configured device whose key is not available. */
@@ -1043,6 +1449,15 @@ export class SyncEngine {
 		this.accountId = null;
 		this.deviceId = null;
 		this.deviceName = '';
+		this.email = null;
+		this.authMode = null;
+		this.#setMaster(null);
+	}
+
+	#setMaster(master: Uint8Array<ArrayBuffer> | null) {
+		if (this.#master && this.#master !== master) this.#master.fill(0);
+		this.#master = master;
+		this.hasMasterKey = !!master;
 	}
 
 	/**
@@ -1071,7 +1486,7 @@ export class SyncEngine {
 	async #ensureServer(api: SyncApi) {
 		let ok = false;
 		try {
-			ok = (await api.health()).body?.service === 'prismastream-sync';
+			ok = isPrismaService((await api.health()).body?.service);
 		} catch (err) {
 			if (err instanceof SyncNetworkError) throw this.#fail('network');
 		}
@@ -1090,6 +1505,10 @@ export class SyncEngine {
 					invalid_code: 'invalidCode',
 					device_limit: 'deviceLimit',
 					signup_disabled: 'signupDisabled',
+					invalid_signup_code: 'invalidSignupCode',
+					signup_code_required: 'invalidSignupCode',
+					invalid_signup: 'invalidSignupCode',
+					bad_signup_code: 'invalidSignupCode',
 					rate_limited: 'rateLimited',
 					too_many_codes: 'rateLimited',
 					unauthorized: 'unauthorized',
@@ -1104,6 +1523,12 @@ export class SyncEngine {
 	#fail(code: SyncErrorCode): SyncFailure {
 		return new SyncFailure(code);
 	}
+}
+
+/** "abcd 1234" → "ABCD-1234" (the server's user-code format). */
+export function normalizeUserCode(code: string): string {
+	const c = code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+	return c.length === 8 ? `${c.slice(0, 4)}-${c.slice(4)}` : c;
 }
 
 /** Error thrown by the public engine methods; `code` maps to `sync.error.<code>`. */

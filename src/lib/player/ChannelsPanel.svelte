@@ -2,7 +2,7 @@
 	import type { Channel } from '#lib/types.ts';
 	import { t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
 	import Icon from './Icon.svelte';
 
 	interface Props {
@@ -51,7 +51,7 @@
 
 <ul>
 	{#each list as ch (ch.id)}
-		{@const nn = catalog.nowNext(ch, now)}
+		{@const nn = library.nowNext(ch, now)}
 		{@const fav = user.isFavoriteChannel(ch.id)}
 		<li class:current={ch.id === currentId}>
 			<button

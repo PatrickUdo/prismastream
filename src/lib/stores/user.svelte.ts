@@ -69,7 +69,11 @@ class UserStore {
 
 	async init() {
 		if (this.ready) return;
-		this.profiles = await loadJSON<Profile[]>('profiles', []);
+		const stored = await loadJSON<Profile[] | null>('profiles', []);
+		// Never keep holes or junk: every reader assumes `profile.id` exists.
+		this.profiles = (Array.isArray(stored) ? stored : []).filter(
+			(p): p is Profile => !!p && typeof p === 'object' && typeof p.id === 'string' && !!p.id
+		);
 		this.settings = { ...DEFAULT_SETTINGS, ...(await loadJSON('settings', {})) };
 		if (this.profiles.length === 0) {
 			this.profiles = [this.#newProfile({ name: 'Ik' })];
@@ -110,6 +114,7 @@ class UserStore {
 	// ---- profiles ---------------------------------------------------------
 
 	async selectProfile(id: string) {
+		if (!this.profiles.some((p) => p.id === id) && this.profiles.length) id = this.profiles[0].id;
 		this.#dataSaver?.flush();
 		this.activeId = id;
 		await saveJSON('activeProfile', id);

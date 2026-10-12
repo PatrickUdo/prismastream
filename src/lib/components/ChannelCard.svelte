@@ -1,10 +1,10 @@
 <!--
-	Live channel card: logo (or monogram), name and what is on now (via catalog.nowNext)
+	Live channel card: logo (or monogram), name and what is on now (via library.nowNext)
 	with the programme's progress and what comes next.
 -->
 <script lang="ts">
-	import type { Channel } from '#lib/types.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
+	import type { Channel, ChannelCard } from '#lib/types.ts';
+	import { library } from '#lib/catalog/library.svelte.ts';
 	import { t } from '#lib/i18n/index.svelte.ts';
 	import ProgressBar from './ProgressBar.svelte';
 	import { liveHref } from './links.ts';
@@ -12,7 +12,7 @@
 	import { hashString } from './art.ts';
 
 	interface Props {
-		channel: Channel;
+		channel: Channel | ChannelCard;
 		/** Current time (epoch ms); pass a ticking value to keep "now" fresh. */
 		now?: number;
 	}
@@ -20,7 +20,7 @@
 	let { channel, now = Date.now() }: Props = $props();
 
 	let logoFailed = $state(false);
-	const nn = $derived(catalog.nowNext(channel, now));
+	const nn = $derived(library.nowNext(channel, now));
 	const progress = $derived(
 		nn.now ? (now - nn.now.start) / Math.max(1, nn.now.stop - nn.now.start) : 0
 	);

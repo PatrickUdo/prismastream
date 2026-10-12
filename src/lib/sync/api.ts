@@ -18,6 +18,13 @@ export interface Credentials {
 	kdf: Kdf;
 }
 
+/** Session returned by register, login and the device login. */
+export interface AuthSession {
+	accountId: string;
+	token: string;
+	deviceId: string;
+}
+
 export interface DeviceInfo {
 	id: string;
 	name: string;
@@ -130,14 +137,19 @@ export class SyncApi {
 	}
 
 	health() {
-		return this.call<{ ok: boolean; service?: string }>('/v1/health', { timeoutMs: 8000 });
+		return this.call<{ ok: boolean; service?: string; signup?: string; features?: string[] }>(
+			'/v1/health',
+			{ timeoutMs: 8000 }
+		);
 	}
 
-	async createAccount(deviceName: string, kdf: Kdf): Promise<Credentials> {
+	async createAccount(deviceName: string, kdf: Kdf, signupCode?: string): Promise<Credentials> {
+		const json: Record<string, unknown> = { deviceName, kdf };
+		if (signupCode) json.signupCode = signupCode;
 		return (
 			await this.call<Credentials>('/v1/accounts', {
 				method: 'POST',
-				json: { deviceName, kdf }
+				json
 			})
 		).body;
 	}
@@ -233,6 +245,104 @@ export class SyncApi {
 		).body;
 	}
 
+	// ---- e-mail + password accounts (docs/BACKEND.md, "Accounts en synchronisatie") ----------
+
+	async prelogin(email: string) {
+		return (
+			await this.call<{ salt: string; iterations: number }>('/v1/auth/prelogin', {
+				method: 'POST',
+				json: { email }
+			})
+		).body;
+	}
+
+	async register(body: {
+		email: string;
+		authKey: string;
+		salt: string;
+		iterations: number;
+		signupCode?: string;
+		deviceName: string;
+	}) {
+		return (
+			await this.call<AuthSession>('/v1/auth/register', {
+				method: 'POST',
+				json: body,
+				timeoutMs: 30_000
+			})
+		).body;
+	}
+
+	async login(body: { email: string; authKey: string; deviceName: string }) {
+		return (await this.call<AuthSession>('/v1/auth/login', { method: 'POST', json: body })).body;
+	}
+
+	async logout(token: string) {
+		await this.call('/v1/auth/logout', { method: 'POST', token, accept: [401, 404] });
+	}
+
+	async changePassword(
+		token: string,
+		body: { oldAuthKey: string; newAuthKey: string; newSalt: string; newIterations: number }
+	) {
+		await this.call('/v1/auth/password', { method: 'POST', token, json: body });
+	}
+
+	async deviceCode(body: { publicKey: string; deviceName: string }) {
+		return (
+			await this.call<{
+				userCode: string;
+				deviceCode: string;
+				verifyUrl?: string;
+				expiresIn: number;
+				interval?: number;
+			}>('/v1/auth/device-code', { method: 'POST', json: body })
+		).body;
+	}
+
+	/** Poll once: `{ pending }` while the code waits for approval. */
+	async deviceToken(
+		deviceCode: string
+	): Promise<
+		| { pending: true; slowDown?: boolean }
+		| (AuthSession & { sealedKey: string; ephemeralPublicKey: string })
+	> {
+		const r = await this.call<Record<string, unknown>>('/v1/auth/device-token', {
+			method: 'POST',
+			json: { deviceCode },
+			accept: [202, 400, 403, 428]
+		});
+		const b = (r.body ?? {}) as Record<string, unknown>;
+		if (r.status === 200 && typeof b.token === 'string')
+			return b as unknown as AuthSession & { sealedKey: string; ephemeralPublicKey: string };
+		const code = String(b.error ?? b.code ?? '');
+		if (r.status === 202 || code === 'authorization_pending' || code === 'pending')
+			return { pending: true };
+		if (code === 'slow_down') return { pending: true, slowDown: true };
+		throw new SyncApiError(r.status, code || 'http_' + r.status, b);
+	}
+
+	async lookupDeviceCode(token: string, userCode: string) {
+		return (
+			await this.call<{ deviceName: string; publicKey: string; expiresAt?: number }>(
+				`/v1/auth/device-code/${encodeURIComponent(userCode)}`,
+				{ token }
+			)
+		).body;
+	}
+
+	async approveDeviceCode(
+		token: string,
+		userCode: string,
+		body: { sealedKey: string; ephemeralPublicKey: string }
+	) {
+		await this.call(`/v1/auth/device-code/${encodeURIComponent(userCode)}/approve`, {
+			method: 'POST',
+			token,
+			json: body
+		});
+	}
+
 	async proxyToken(token: string) {
 		return (
 			await this.call<{ proxyToken: string; prefix: string }>('/v1/proxy-token', {
@@ -241,4 +351,9 @@ export class SyncApi {
 			})
 		).body;
 	}
+}
+
+/** True when a /v1/health `service` value belongs to a PrismaStream server (sync or backend). */
+export function isPrismaService(service: unknown): boolean {
+	return typeof service === 'string' && service.startsWith('prismastream');
 }

@@ -3,7 +3,7 @@
 	remaining time and an accent progress bar. Links straight into the player.
 -->
 <script lang="ts">
-	import type { Title, WatchProgress } from '#lib/types.ts';
+	import type { Title, TitleCard as Card, WatchProgress } from '#lib/types.ts';
 	import { t } from '#lib/i18n/index.svelte.ts';
 	import Backdrop from './Backdrop.svelte';
 	import ProgressBar from './ProgressBar.svelte';
@@ -14,14 +14,24 @@
 	import { findEpisode } from './versions.ts';
 
 	interface Props {
-		title: Title;
+		title: Card | Title;
 		progress: WatchProgress;
 	}
 
 	let { title, progress }: Props = $props();
 
 	const name = $derived(displayTitle(title));
-	const episode = $derived(findEpisode(title, progress.episodeId));
+	const episode = $derived(
+		'seasons' in title && title.seasons
+			? findEpisode(title as Title, progress.episodeId)
+			: undefined
+	);
+	/** Season/episode from the id (`<titleId>/s1e2`) when the seasons are not loaded (cards). */
+	const parsed = $derived.by(() => {
+		if (episode || !progress.episodeId) return undefined;
+		const m = /s(\d+)e(\d+)$/i.exec(progress.episodeId);
+		return m ? { season: Number(m[1]), episode: Number(m[2]) } : undefined;
+	});
 	const ratio = $derived(
 		progress.durationSec > 0 ? Math.min(1, progress.positionSec / progress.durationSec) : 0
 	);
@@ -30,10 +40,12 @@
 		episode
 			? t('ui.episodeShort', { s: episode.season, e: episode.episode }) +
 					(episode.title ? ` · ${episode.title}` : '')
-			: remaining
+			: parsed
+				? t('ui.episodeShort', { s: parsed.season, e: parsed.episode })
+				: remaining
 	);
 	const label = $derived(
-		t('ui.resumeLabel', { title: name }) + (episode ? `, ${sub}` : '') + `, ${remaining}`
+		t('ui.resumeLabel', { title: name }) + (episode || parsed ? `, ${sub}` : '') + `, ${remaining}`
 	);
 </script>
 
@@ -54,7 +66,7 @@
 		<div class="info" aria-hidden="true">
 			<strong>{name}</strong>
 			<span class="sub">{sub}</span>
-			{#if episode && remaining}<span class="rem">{remaining}</span>{/if}
+			{#if (episode || parsed) && remaining}<span class="rem">{remaining}</span>{/if}
 		</div>
 		<div class="bar"><ProgressBar value={ratio} size="m" /></div>
 	</div>

@@ -3,20 +3,13 @@
 	Empty rows are hidden; each title appears at most once per row.
 -->
 <script lang="ts">
-	import type { HomeRowId, Title } from '#lib/types.ts';
+	import type { HomeRowId, TitleCard as Card, WatchProgress } from '#lib/types.ts';
 	import { t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { catalog } from '#lib/stores/catalog.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
-	import {
-		featured,
-		genreCounts,
-		popular,
-		recent,
-		recommend,
-		trending,
-		uniqueTitles
-	} from '#lib/recommend.ts';
+	import { errorText, library } from '#lib/catalog/library.svelte.ts';
+	import { resource } from '#lib/catalog/resource.svelte.ts';
+	import { emptyHome } from '#lib/catalog/provider.ts';
 	import Hero from '#lib/components/Hero.svelte';
 	import Row from '#lib/components/Row.svelte';
 	import TitleCard from '#lib/components/TitleCard.svelte';
@@ -26,43 +19,86 @@
 	import Skeleton from '#lib/components/Skeleton.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
+	import CloudBanner from '#lib/components/CloudBanner.svelte';
 	import { libraryHref, path } from '#lib/components/links.ts';
 
 	const ROW_LIMIT = 24;
 
-	const loading = $derived(catalog.status === 'idle' || catalog.status === 'loading');
-	// Kids profiles only see kids-safe titles and channels (see kids store).
-	const titles = $derived(kids.visibleTitles);
-	const heroTitles = $derived(featured(titles, 5));
+	// Shared rows (hero, recent, popular, trending, genres, live) in one request.
+	const home = resource(
+		() => (library.initialized ? `${library.version}|${kids.active}` : null),
+		(_k, signal) => library.provider.home({ kids: kids.active, limit: ROW_LIMIT }, signal)
+	);
+	const data = $derived(home.value ?? emptyHome());
+
+	// Personal rows: cards for the ids in the profile's (E2E-synced) data.
+	const progressList = $derived(user.continueWatching().slice(0, ROW_LIMIT));
+	const continueIds = $derived(progressList.map((p) => p.titleId));
+	const favoriteIds = $derived(user.data.favorites.slice(0, ROW_LIMIT));
+	const personal = resource(
+		() =>
+			library.initialized
+				? `${library.version}|${kids.active}|${continueIds.join(',')}|${favoriteIds.join(',')}`
+				: null,
+		(_k, signal) =>
+			library.provider.cards([...continueIds, ...favoriteIds], { kids: kids.active }, signal)
+	);
+	const byId = $derived(new Map((personal.value ?? []).map((c) => [c.id, c])));
+
+	const recommendedRes = resource(
+		() =>
+			library.initialized && rows.includes('recommended')
+				? `${library.version}|${kids.active}|${user.activeId}|${user.data.favorites.length}|${user.data.history.length}`
+				: null,
+		(_k, signal) =>
+			library.provider.recommend(
+				{
+					history: user.data.history.map((h) => h.titleId),
+					favorites: user.data.favorites,
+					kids: kids.active,
+					limit: ROW_LIMIT
+				},
+				signal
+			)
+	);
+
+	const loading = $derived(
+		library.status === 'loading' || (!home.value && (home.loading || !library.initialized))
+	);
+	const failed = $derived(!home.value && !!home.error && !home.loading);
 	const rows = $derived(user.data.homeRows.filter((r) => r.visible).map((r) => r.id));
+	const heroTitles = $derived(kids.filterTitles(data.featured).slice(0, 5));
 
 	const continueItems = $derived(
-		user
-			.continueWatching()
-			.map((progress) => ({ progress, title: catalog.getTitle(progress.titleId) }))
+		progressList
+			.map((progress) => ({ progress, title: byId.get(progress.titleId) }))
 			.filter(
-				(x): x is { progress: typeof x.progress; title: Title } =>
-					!!x.title && kids.isAllowed(x.title)
+				(x): x is { progress: WatchProgress; title: Card } => !!x.title && kids.isAllowed(x.title)
 			)
-			.slice(0, ROW_LIMIT)
 	);
 	const favorites = $derived(
-		uniqueTitles(kids.filterTitles(user.data.favorites.map((id) => catalog.getTitle(id)))).slice(
-			0,
-			ROW_LIMIT
-		)
+		kids.filterTitles(favoriteIds.map((id) => byId.get(id)).filter((c): c is Card => !!c))
 	);
-	const recommended = $derived(uniqueTitles(recommend(titles, user.data, ROW_LIMIT)));
-	const recentTitles = $derived(uniqueTitles(recent(titles, ROW_LIMIT)));
-	const popularMovies = $derived(uniqueTitles(popular(titles, 'movie', ROW_LIMIT)));
-	const trendingSeries = $derived(uniqueTitles(trending(titles, 'series', ROW_LIMIT)));
+	const recommended = $derived(kids.filterTitles(recommendedRes.value ?? []));
+	const recentTitles = $derived(kids.filterTitles(data.recent));
+	const popularMovies = $derived(kids.filterTitles(data.popularMovies));
+	const trendingSeries = $derived(kids.filterTitles(data.trendingSeries));
 	const channels = $derived.by(() => {
 		const fav = new Set(user.data.favoriteChannels);
-		return [...kids.visibleChannels]
+		return kids
+			.filterChannels(data.live)
 			.sort((a, b) => Number(fav.has(b.id)) - Number(fav.has(a.id)))
 			.slice(0, ROW_LIMIT);
 	});
-	const genres = $derived(genreCounts(titles, 'movie').slice(0, 16));
+	const genres = $derived(data.genres.slice(0, 16));
+	const nothing = $derived(
+		!heroTitles.length &&
+			!recentTitles.length &&
+			!popularMovies.length &&
+			!trendingSeries.length &&
+			!channels.length
+	);
+	const building = $derived(library.mode === 'remote' && library.meta?.status === 'building');
 
 	// Clock for "now on TV".
 	let now = $state(Date.now());
@@ -92,7 +128,7 @@
 		}
 	}
 
-	const titleKey = (t: Title) => t.id;
+	const titleKey = (t: Card) => t.id;
 </script>
 
 <svelte:head>
@@ -101,7 +137,7 @@
 
 <h1 class="sr-only">{t('nav.home')}</h1>
 
-{#snippet titleCard(title: Title, i: number)}
+{#snippet titleCard(title: Card, i: number)}
 	<TitleCard {title} eager={i < 8} />
 {/snippet}
 
@@ -129,23 +165,46 @@
 			</div>
 		{/each}
 	</div>
-{:else if catalog.status === 'error'}
+{:else if failed || (library.status === 'error' && nothing)}
 	<div class="page">
-		<EmptyState icon="alert" tone="error" title={t('common.error')} body={catalog.error ?? ''}>
+		<CloudBanner />
+		<EmptyState
+			icon="alert"
+			tone="error"
+			title={t('common.error')}
+			body={home.error ? t(errorText(home.error)) : (library.error ?? t('cloud.error.unknown'))}
+		>
 			{#snippet actions()}
-				<Button variant="primary" icon="refresh" onclick={() => catalog.refresh()}>
+				<Button
+					variant="primary"
+					icon="refresh"
+					onclick={() => (
+						library.mode === 'remote' ? library.poke() : library.refresh(),
+						home.reload()
+					)}
+				>
 					{t('common.retry')}
 				</Button>
 			{/snippet}
 		</EmptyState>
 	</div>
-{:else if titles.length === 0 && kids.visibleChannels.length === 0}
+{:else if nothing}
 	<div class="page">
-		<EmptyState icon="source" title={t('home.emptyTitle')} body={t('home.emptyBody')}>
+		<CloudBanner />
+		<EmptyState
+			icon="source"
+			title={building ? t('cloud.building.title') : t('cloud.empty.title')}
+			body={building ? t('cloud.building.body') : t('cloud.empty.body')}
+		>
 			{#snippet actions()}
 				<Button variant="primary" icon="plus" href={path('/settings/sources')}>
-					{t('home.addSource')}
+					{t('cloud.empty.add')}
 				</Button>
+				{#if library.backendUrl && !library.hasAccount}
+					<Button variant="glass" icon="user" href={path('/settings/sync')}>
+						{t('cloud.login')}
+					</Button>
+				{/if}
 			{/snippet}
 		</EmptyState>
 	</div>
@@ -155,6 +214,7 @@
 	{/if}
 
 	<div class="rows" class:no-hero={heroTitles.length === 0}>
+		<CloudBanner inset />
 		{#each rows as id (id)}
 			{#if !isEmpty(id)}
 				{#if id === 'continue'}
@@ -215,12 +275,12 @@
 						{/snippet}
 					</Row>
 				{:else if id === 'genres'}
-					<Row title={t('home.row.genres')} items={genres} key={(g) => g.genre} variant="tile">
+					<Row title={t('home.row.genres')} items={genres} key={(g) => g.slug} variant="tile">
 						{#snippet item(g)}
 							<GenreTile
-								genre={g.genre}
+								genre={g.name}
 								count={g.count}
-								href={libraryHref('movie', { genre: g.genre })}
+								href={libraryHref('movie', { genre: g.slug })}
 							/>
 						{/snippet}
 					</Row>
