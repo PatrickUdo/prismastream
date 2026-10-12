@@ -16,7 +16,7 @@ public final class CatalogStore {
         case failed(String)
     }
 
-    static let log = Logger(subsystem: "nl.tuwi.prismastream.tv", category: "catalog")
+    static let log = Logger(subsystem: "nl.patrickudo.prismastream.tv", category: "catalog")
 
     public private(set) var phase: Phase = .idle
     public private(set) var catalog = Catalog()

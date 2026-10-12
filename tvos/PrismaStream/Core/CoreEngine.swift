@@ -65,9 +65,9 @@ private struct QueueBound<T>: @unchecked Sendable {
 public final class CoreEngine: @unchecked Sendable {
     public static let shared = CoreEngine()
 
-    static let log = Logger(subsystem: "nl.tuwi.prismastream.tv", category: "core")
+    static let log = Logger(subsystem: "nl.patrickudo.prismastream.tv", category: "core")
 
-    private let queue = DispatchQueue(label: "nl.tuwi.prismastream.core", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "nl.patrickudo.prismastream.core", qos: .userInitiated)
     private let scriptURL: URL?
 
     // Everything below is confined to `queue`.

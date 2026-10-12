@@ -2,7 +2,7 @@ import XCTest
 @testable import PrismaStream
 
 final class KeychainTests: XCTestCase {
-    let keychain = Keychain(service: "nl.tuwi.prismastream.tv.tests")
+    let keychain = Keychain(service: "nl.patrickudo.prismastream.tv.tests")
 
     override func tearDown() {
         keychain.delete("acc")

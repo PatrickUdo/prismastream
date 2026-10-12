@@ -1,4 +1,4 @@
-package nl.tuwi.prismastream;
+package nl.patrickudo.prismastream;
 
 import com.getcapacitor.BridgeActivity;
 

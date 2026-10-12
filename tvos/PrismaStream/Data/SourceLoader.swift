@@ -6,7 +6,7 @@ import Foundation
 import os
 
 public struct SourceLoader: Sendable {
-    static let log = Logger(subsystem: "nl.tuwi.prismastream.tv", category: "sources")
+    static let log = Logger(subsystem: "nl.patrickudo.prismastream.tv", category: "sources")
 
     let engine: CoreEngine
     let fetcher: Fetcher

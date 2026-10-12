@@ -170,5 +170,5 @@ public final class UserStore {
         }
     }
 
-    private static let writeQueue = DispatchQueue(label: "nl.tuwi.prismastream.user-store", qos: .utility)
+    private static let writeQueue = DispatchQueue(label: "nl.patrickudo.prismastream.user-store", qos: .utility)
 }

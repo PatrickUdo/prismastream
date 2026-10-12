@@ -17,7 +17,7 @@ public enum KeychainError: LocalizedError, Equatable {
 public struct Keychain: Sendable {
     public let service: String
 
-    public init(service: String = "nl.tuwi.prismastream.tv.sources") {
+    public init(service: String = "nl.patrickudo.prismastream.tv.sources") {
         self.service = service
     }
 

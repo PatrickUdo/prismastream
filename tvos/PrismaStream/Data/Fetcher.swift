@@ -25,7 +25,7 @@ public enum FetchError: LocalizedError, Equatable {
 }
 
 public struct Fetcher: Sendable {
-    static let log = Logger(subsystem: "nl.tuwi.prismastream.tv", category: "net")
+    static let log = Logger(subsystem: "nl.patrickudo.prismastream.tv", category: "net")
 
     public var retries: Int
     let session: URLSession

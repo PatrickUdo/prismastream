@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-	appId: 'nl.tuwi.prismastream',
+	appId: 'nl.patrickudo.prismastream',
 	appName: 'PrismaStream',
 	webDir: 'build',
 	// Matches --bg so there is no white flash while the WebView boots.

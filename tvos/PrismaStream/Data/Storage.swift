@@ -22,7 +22,7 @@ public enum AppPaths {
 }
 
 public enum JSONStore {
-    static let log = Logger(subsystem: "nl.tuwi.prismastream.tv", category: "storage")
+    static let log = Logger(subsystem: "nl.patrickudo.prismastream.tv", category: "storage")
 
     public static func load<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
         guard let data = try? Data(contentsOf: url) else { return nil }

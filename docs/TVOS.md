@@ -55,7 +55,7 @@ De JS-kern draait in een kale `JSContext`: er zijn geen `window`, `document`, `f
 
 - Kern: `npm run build:core`, wat `tvos/PrismaStream/Resources/prisma-core.js` schrijft.
 - App: `tvos/project.yml` (XcodeGen) → `cd tvos && xcodegen generate`, wat `PrismaStream.xcodeproj` maakt. Bouwen met `xcodebuild -scheme PrismaStreamTV -sdk appletvsimulator`.
-- Bundle-id: `nl.tuwi.prismastream.tv`, minimaal tvOS 17.
+- Bundle-id: `nl.patrickudo.prismastream.tv`, minimaal tvOS 17.
 
 ## Kern: status
 

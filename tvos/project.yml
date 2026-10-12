@@ -1,6 +1,6 @@
 name: PrismaStream
 options:
-  bundleIdPrefix: nl.tuwi.prismastream
+  bundleIdPrefix: nl.patrickudo.prismastream
   deploymentTarget:
     tvOS: "17.0"
   developmentLanguage: nl
@@ -27,7 +27,7 @@ targets:
     resources: []
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: nl.tuwi.prismastream.tv
+        PRODUCT_BUNDLE_IDENTIFIER: nl.patrickudo.prismastream.tv
         PRODUCT_NAME: PrismaStream
         INFOPLIST_FILE: PrismaStream/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
@@ -59,7 +59,7 @@ targets:
       - target: PrismaStreamTV
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: nl.tuwi.prismastream.tv.tests
+        PRODUCT_BUNDLE_IDENTIFIER: nl.patrickudo.prismastream.tv.tests
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/PrismaStream.app/PrismaStream"
         BUNDLE_LOADER: "$(TEST_HOST)"
         GENERATE_INFOPLIST_FILE: YES
@@ -71,7 +71,7 @@ targets:
       - target: PrismaStreamTV
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: nl.tuwi.prismastream.tv.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: nl.patrickudo.prismastream.tv.uitests
         TEST_TARGET_NAME: PrismaStreamTV
         GENERATE_INFOPLIST_FILE: YES
 schemes:

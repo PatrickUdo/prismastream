@@ -29,7 +29,7 @@ struct PlayerScreen: UIViewControllerRepresentable {
 
 @MainActor
 final class PlayerController: NSObject, AVPlayerViewControllerDelegate {
-    static let log = Logger(subsystem: "nl.tuwi.prismastream.tv", category: "player")
+    static let log = Logger(subsystem: "nl.patrickudo.prismastream.tv", category: "player")
 
     private(set) var session: PlaybackSession
     private let app: AppModel
