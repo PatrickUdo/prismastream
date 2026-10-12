@@ -108,3 +108,31 @@ De gebruiker wil dat synchroniseren "gewoon" werkt via deze app en deze server: 
 - **Server:** in productie (`DEMO_SOURCE=false`, standaard in de productie-compose) krijgt een account géén `sample`-bron. `GET /v1/sources` toont hem niet, en de catalogus bevat alleen echte bronnen.
 - **Productie-web-app** (`VITE_DEMO=false`): geen demobron in lokale modus en geen demodata in de bundel (tree-shaken waar mogelijk). Zonder bronnen staat er een nette lege staat met "Voeg je IPTV-bron toe" (Xtream of M3U).
 - **Ontwikkeling en tests:** de demo blijft beschikbaar (`DEMO_SOURCE=true` en `VITE_DEMO=true`, de standaard in dev).
+
+## Status (server, Agent L)
+
+Gebouwd en getest (`cd server && npm test`: 61 tests; root `npm test` en `npm run check` groen):
+
+- **Kern op Node:** `src/core/node.ts` (object-API) → `npm run build:core:node` → `server/vendor/prisma-core.mjs` (ESM, node24, saxes inbegrepen). Types: `server/vendor/prisma-core.d.mts` (met de hand; `src/core/node.test.ts` bewaakt dat de exports gelijk blijven). De bundel staat in git (server en tests werken zonder root-build); de Dockerfile bouwt hem altijd opnieuw uit de bron.
+- **Accounts:** e-mail + zero-knowledge-login, tv-login met ECDH-verzegelde sleutel, `signupCode`, lockout. Legacy `/v1/accounts` en pairing werken nog.
+- **Bronnen en catalogus:** alle endpoints uit dit document; opslag in SQLite (`DATA_DIR/catalog.db`) plus ruwe gzip-NDJSON per bron in `DATA_DIR/cache/<account>/<bron>/`. Builds in een worker thread (1 tegelijk), scheduler elke 12 uur, lazy Xtream-series, optionele TMDB-verrijking met gedeelde cache.
+- **Play-urls:** `pt_`-tokens per apparaat, 302 of `?via=proxy` (HLS herschreven naar verzegelde segment-urls, MPEG-TS en Range streamend, `X-Accel-Buffering: no`).
+- **Gemeten (50.000 items):** build ± 2 s, piek-RSS ± 390–440 MB lokaal en 386 MB in de container (`--memory 768m`), lijstqueries 1–2 ms. Zie `server/README.md`.
+- **Docker:** `docker build -f server/Dockerfile -t prismastream-server .` (context = repo-root), non-root, healthcheck, `NODE_OPTIONS=--max-old-space-size=512`.
+
+## Wijzigingen
+
+Aanvullingen en precisering van het contract door de server (alles additief, tenzij anders vermeld):
+
+1. **Play-urls:** formaat `${PUBLIC_URL}/v1/play/<playToken>/<base64url(variantId)>[~n][.ext]`. `~n` = `altUrls[n-1]` (live: de `.ts`-tweeling van een Xtream-`.m3u8`); `.ext` is de extensie van de echte stream (helpt AVPlayer/ExoPlayer bij het herkennen van HLS). De client hoeft dit niet zelf te bouwen: elke `variants[].url`/`altUrls` in `titles/:id` en `channels` is al een play-url voor het apparaat dat de aanvraag doet.
+2. **Play-token:** `GET /v1/play-token` → `{ playToken, prefix }` (huidig), `POST /v1/play-token` → nieuw token; alle oude play-urls van dat apparaat vervallen. Afmelden van het apparaat trekt ze ook in. `?via=proxy` werkt op elke play-url (ook HEAD en Range); segmenten lopen via `/v1/play/<token>/s/<verzegeld>` (intern, niet zelf bouwen).
+3. **`StreamVariant.upstreamHttp: boolean`** (alleen in API-antwoorden): `true` als de echte stream `http:` is. Dan heeft de https-webversie `?via=proxy` nodig.
+4. **Series in `titles/:id`** hebben altijd `seasons` (eventueel `[]` als de provider faalde; de server probeert het na 5 minuten opnieuw). `?kids=1` op `titles/:id` geeft `403 kids_restricted` voor titels die niet kindveilig zijn.
+5. **Bronnen:** extra velden `errorCode`, `lastWarning`, `epgSyncAt`; `account` bevat ook `activeConnections` en `isTrial`. `DELETE /v1/sources/sample` verwijdert de demo niet maar zet hem uit (`{ ok: true, disabled: true }`); andere bronnen: `200 { ok: true }`. `POST`/`PATCH` geven bij ongeldige invoer `400 invalid_source` of `400 blocked_address`.
+6. **Foutcodes van bronnen** (`POST /v1/sources/test` → `{ ok:false, code, message, expiresAt? }`, en `errorCode` op de bron): `unreachable`, `timeout`, `auth`, `expired` (met `expiresAt`), `banned_ip` (HTTP 403 van de provider; vaak een geblokkeerd datacenter-IP), `invalid_response`, `too_large`, `blocked_address`, `http`, `config`. Een geslaagde test geeft ook `maxConnections`, `activeConnections`, `epgSuggestion` (M3U, gemaskeerd) en `warnings`. Max. 10 tests per 10 minuten per account.
+7. **Catalogus:** `meta` accepteert `?kids=1` en geeft tijdens een build ook `phase`. `refresh` geeft `202 { queued: true, status: 'building', state }`; met `force` of `sourceId` max. 6 per uur. `titles?ids=` behoudt de volgorde van `ids`. `sort=year` is aflopend. `search.genres[]` heeft ook `movies`, `series` en `count`. `epg` zonder `from`/`to`: `now − 2 u` tot `from + 24 u`; het venster wordt op 48 uur afgekapt. `nownext` max. 200 zenders, `Cache-Control: private, max-age=30`.
+8. **Auth:** `register`/`login` geven ook `salt` en `kdf`; `iterations` minimaal 600.000. `register` → `409 email_taken` bij een bestaand adres, `403 invalid_signup_code` zonder geldige code. `login` → `429` (met `Retry-After`) na 10 mislukte pogingen per e-mailadres in 15 minuten, `409 device_limit` bij te veel apparaten. `password` meldt **alle andere apparaten af** en geeft `{ ok, revokedDevices, salt, kdf }`. Uitloggen van het laatste apparaat verwijdert een e-mailaccount niet (legacy-accounts wel, zoals voorheen).
+9. **Tv-login:** `device-code` geeft ook `verifyUrlComplete` (`verifyUrl?code=ABCD-EFGH`; de code komt uit een alfabet zonder 0/O/1/I/L). `publicKey` en `ephemeralPublicKey`: P-256 als base64 van het ruwe punt (65 bytes, aanbevolen: `exportKey('raw')`), SPKI-DER, of een JWK-string. `GET device-code/:userCode` geeft ook `userCode` en `expiresAt`. Pollen: `400 { error: 'authorization_pending' | 'slow_down' | 'expired_token' | 'invalid_grant', interval? }`. `sealedKey` is voor de server een ondoorzichtige base64-string (aanbevolen: `iv(12) ‖ AES-GCM-ciphertext` met een sleutel uit ECDH + HKDF-SHA256, info `prismastream-device-v1`, zoals in `server/test/auth.test.ts`).
+10. **Aanmelden:** de legacy `POST /v1/accounts` accepteert ook `signupCode` en weigert zonder code als `ALLOW_SIGNUP=false`.
+11. **CORS:** `PATCH` en de header `If-None-Match` zijn toegestaan.
+12. **Nieuwe env:** `DEMO_SOURCE`, `DATA_DIR`, `SERVER_KEY(_FILE)`, `SIGNUP_CODE`, `TMDB_API_KEY`, `VERIFY_URL`, `CATALOG_*`, `*_MAX_BYTES`, `FETCH_*` (zie `server/README.md`).

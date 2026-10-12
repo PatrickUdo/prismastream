@@ -4,10 +4,19 @@ import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 
 const config = loadConfig();
-const ctx = createApp(config);
+let ctx: ReturnType<typeof createApp>;
+try {
+	ctx = createApp(config);
+} catch (err) {
+	console.error(`Starten mislukt: ${(err as Error).message}`);
+	process.exit(1);
+}
 
 const server = serve({ fetch: ctx.app.fetch, port: config.port, hostname: config.host }, (info) => {
-	console.log(`PrismaStream sync-server luistert op http://${info.address}:${info.port}`);
+	console.log(`PrismaStream-server luistert op http://${info.address}:${info.port}`);
+	console.log(
+		`Data: ${config.dataDir} · catalogus: ${config.catalogEnabled ? 'aan' : 'uit'} · demo: ${config.demoSource ? 'aan' : 'uit'} · aanmelden: ${config.allowSignup ? 'open' : config.signupCode ? 'met code' : 'dicht'}`
+	);
 	if (config.proxyAllowPrivate) console.warn('WAARSCHUWING: PROXY_ALLOW_PRIVATE staat aan.');
 });
 
@@ -18,8 +27,7 @@ function shutdown(signal: string) {
 	console.log(`${signal} ontvangen, server stopt…`);
 	ctx.events.closeAll();
 	server.close(() => {
-		ctx.dispose();
-		process.exit(0);
+		void ctx.dispose().finally(() => process.exit(0));
 	});
 	setTimeout(() => process.exit(0), 5000).unref();
 }

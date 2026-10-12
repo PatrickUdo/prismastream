@@ -17,6 +17,11 @@ export interface ProxyOptions {
 	method: 'GET' | 'HEAD';
 	headers: Record<string, string | undefined>;
 	signal?: AbortSignal;
+	/**
+	 * Custom url wrapper for HLS rewriting (overrides selfPrefix). The play route uses it to
+	 * hide upstream urls (which may contain credentials) inside sealed tokens.
+	 */
+	wrapUrl?: (absoluteUrl: string) => string;
 }
 
 export class ProxyError extends Error {
@@ -98,7 +103,12 @@ function isHlsCandidate(res: IncomingMessage, url: URL): boolean {
 }
 
 /** Rewrites every URI in an HLS playlist to an absolute url that goes through the proxy. */
-export function rewritePlaylist(text: string, base: URL, selfPrefix: string): string {
+export function rewritePlaylist(
+	text: string,
+	base: URL,
+	selfPrefix: string,
+	wrapUrl?: (absoluteUrl: string) => string
+): string {
 	const wrap = (ref: string) => {
 		let abs: string;
 		try {
@@ -106,6 +116,7 @@ export function rewritePlaylist(text: string, base: URL, selfPrefix: string): st
 		} catch {
 			return ref;
 		}
+		if (wrapUrl) return wrapUrl(abs);
 		if (abs.startsWith(selfPrefix.split('?')[0])) return abs;
 		return selfPrefix + encodeURIComponent(abs);
 	};
@@ -159,6 +170,8 @@ export async function proxyFetch(target: URL, opts: ProxyOptions): Promise<Respo
 		if (typeof v === 'string') headers.set(h, v);
 	}
 	headers.set('x-content-type-options', 'nosniff');
+	// Nginx (Proxy Manager): pass video bytes through without buffering them.
+	headers.set('x-accel-buffering', 'no');
 	const status = upstream.statusCode ?? 502;
 
 	if (opts.method === 'HEAD' || status === 304 || status === 204) {
@@ -189,7 +202,7 @@ export async function proxyFetch(target: URL, opts: ProxyOptions): Promise<Respo
 		if (ended) {
 			const text = head.toString('utf8');
 			if (text.trimStart().startsWith('#EXTM3U') && text.includes('#EXT-X-')) {
-				const body = rewritePlaylist(text, url, opts.selfPrefix);
+				const body = rewritePlaylist(text, url, opts.selfPrefix, opts.wrapUrl);
 				headers.delete('content-length');
 				headers.set('content-type', 'application/vnd.apple.mpegurl');
 				headers.set('cache-control', 'no-store');

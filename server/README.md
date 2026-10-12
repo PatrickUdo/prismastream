@@ -1,212 +1,261 @@
-# PrismaStream sync-server
+# PrismaStream-backend
 
-Kleine, zelf te hosten server die PrismaStream-apparaten met elkaar synchroniseert:
-profielen, favorieten, kijkgeschiedenis, afspeelposities, taalvoorkeuren, instellingen en
-IPTV-accounts. Alles is **end-to-end versleuteld**: de server bewaart alleen onleesbare blokken.
-Daarnaast bevat hij een **CORS-proxy** voor de webversie van de app.
+De server achter `https://backend.prismastream.patrickudo.nl`. Hij doet vier dingen:
 
-- Node 26 (vanaf Node 23.6 draait TypeScript direct, zonder build-stap of `tsx`)
-- HTTP: [Hono](https://hono.dev) met `@hono/node-server`
-- Opslag: de ingebouwde `node:sqlite` (één bestand, WAL-modus)
+1. **Accounts en sync**: één account met e-mail en wachtwoord (zero-knowledge-login), apparaten,
+   tv-login met een code, en end-to-end versleutelde persoonlijke data (`/v1/docs`).
+2. **Server-side catalogus**: haalt per account de IPTV-bronnen op (Xtream Codes, M3U, XMLTV),
+   voegt alles samen met dezelfde TypeScript-engine als de apps, en cachet het. Apparaten vragen
+   alleen op wat op het scherm staat.
+3. **Play-urls**: apparaten krijgen nooit IPTV-inloggegevens; `/v1/play/…` stuurt door (302) naar
+   de echte stream, of streamt hem door de proxy (`?via=proxy`, voor de https-webversie).
+4. **CORS/HLS-proxy** voor de webversie (bestaand, `/v1/proxy/…`).
 
-## Installeren en starten
+Techniek: Node 26 (draait TypeScript direct), [Hono](https://hono.dev), `node:sqlite` (WAL),
+worker threads voor catalogus-builds. Het contract staat in [`docs/BACKEND.md`](../docs/BACKEND.md).
+
+## Starten (ontwikkeling)
 
 ```bash
+# eenmalig in de repo-root: de gedeelde kern bundelen naar server/vendor/prisma-core.mjs
+npm run build:core:node
+
 cd server
 npm install
-npm run dev      # start met --watch op poort 8787
-npm start        # productie: node src/main.ts
-npm test         # node:test, ± 40 tests (accounts, koppelen, versies, conflicten, auth, SSRF)
+npm run dev        # poort 8787, data in ./data (een ontwikkelsleutel wordt daar aangemaakt)
+npm test           # node:test: accounts, auth, bronnen, catalogus, play-urls, proxy, 50k-geheugentest
 npm run typecheck
 ```
 
-Controleren of hij draait:
-
-```bash
-curl http://localhost:8787/v1/health
-# {"ok":true,"service":"prismastream-sync","version":1,"time":...}
-```
-
-Vul in de app bij **Instellingen → Synchronisatie** het adres van de server in
-(bijvoorbeeld `https://sync.voorbeeld.nl`).
+`server/vendor/prisma-core.mjs` staat in git, zodat de server en de tests zonder root-build
+werken. **Bouw hem opnieuw** na elke wijziging in `src/lib/{merge,providers,sample,search,tmdb}`
+of `src/core/node.ts`. De Dockerfile bouwt hem altijd opnieuw uit de bron (stage 1), dus de image
+loopt nooit achter. De typen staan in `server/vendor/prisma-core.d.mts` (met de hand
+bijgehouden; `src/core/node.test.ts` controleert dat de exports overeenkomen).
 
 ## Configuratie (omgevingsvariabelen)
 
-| Variabele                  | Standaard                      | Betekenis                                                                                    |
-| -------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------- |
-| `PORT`                     | `8787`                         | Poort                                                                                        |
-| `HOST`                     | `0.0.0.0`                      | Luisteradres                                                                                 |
-| `DB_PATH`                  | `./data/prismastream-sync.db`  | SQLite-bestand (map wordt aangemaakt)                                                        |
-| `CORS_ORIGINS`             | (leeg)                         | Extra toegestane origins, kommagescheiden. Globs zoals `http://localhost:*` mogen; `*` = alle |
-| `CORS_REPLACE_DEFAULTS`    | `false`                        | `true`: alleen `CORS_ORIGINS` gebruiken, zonder de standaardlijst hieronder                  |
-| `PUBLIC_URL`               | (afgeleid uit het verzoek)     | Publiek adres, bv. `https://sync.voorbeeld.nl`; gebruikt in proxy-urls en HLS-herschrijving   |
-| `TRUST_PROXY`              | `false`                        | `X-Forwarded-For/-Proto/-Host` vertrouwen. Alleen aanzetten achter je eigen reverse proxy    |
-| `ALLOW_SIGNUP`             | `true`                         | `false`: geen nieuwe sync-accounts (bestaande accounts kunnen nog wel apparaten koppelen)    |
-| `PROXY_ENABLED`            | `true`                         | CORS-proxy aan of uit                                                                        |
-| `PROXY_ALLOW_PRIVATE`      | `false`                        | **Gevaarlijk.** Laat de proxy ook privé-/loopback-adressen benaderen (alleen gesloten LAN)   |
-| `PROXY_MAX_BYTES`          | `104857600` (100 MB)           | Maximale grootte van één proxy-antwoord                                                      |
-| `PROXY_TIMEOUT_MS`         | `20000`                        | Time-out voor verbinden en headers (de body mag 2× zo lang stil blijven)                     |
-| `BODY_LIMIT_BYTES`         | `2097152` (2 MB)               | Maximale grootte van een request-body                                                        |
-| `RATE_LIMIT_PER_MIN`       | `600`                          | API-verzoeken per minuut per IP                                                              |
-| `PROXY_RATE_LIMIT_PER_MIN` | `1200`                         | Proxy-verzoeken per minuut per apparaat                                                      |
-| `MAX_DOCS_PER_ACCOUNT`     | `1000`                         | Maximaal aantal documenten per account                                                       |
-| `MAX_DEVICES_PER_ACCOUNT`  | `20`                           | Maximaal aantal gekoppelde apparaten                                                         |
-| `LOG`                      | `true`                         | Toegangslog (methode, pad zonder query en zonder proxy-token, status, duur)                  |
+| Variabele | Standaard | Betekenis |
+| --- | --- | --- |
+| `NODE_ENV` | | `production`: strengere standaarden (geen open aanmelding, geen demo, `SERVER_KEY` verplicht) |
+| `PORT` / `HOST` | `8787` / `0.0.0.0` | Luisteradres |
+| `DATA_DIR` | `./data` (image: `/data`) | Alle data: sync-database, `catalog.db`, `cache/`, ontwikkelsleutel |
+| `DB_PATH` | `$DATA_DIR/prismastream-sync.db` | Sync-database (accounts, apparaten, docs, bronnen) |
+| `SERVER_KEY` | | Base64 van 32 bytes (`openssl rand -base64 32`). Versleutelt IPTV-wachtwoorden en leidt play-tokens af. **Verplicht in productie** |
+| `SERVER_KEY_FILE` | | Pad naar een bestand met die sleutel (Docker secret), in plaats van `SERVER_KEY` |
+| `PUBLIC_URL` | (uit het verzoek) | Publiek adres, bv. `https://backend.prismastream.patrickudo.nl`. Gebruikt in play-urls en HLS-herschrijving |
+| `CORS_ORIGINS` | | Extra origins (kommagescheiden). Productie: `https://prismastream.patrickudo.nl`. De Capacitor-origins (`capacitor://localhost`, `https://localhost`, `http://localhost`, `ionic://localhost`) staan er standaard al in |
+| `TRUST_PROXY` | `false` | `true` achter Nginx Proxy Manager (`X-Forwarded-For/-Proto/-Host`) |
+| `ALLOW_SIGNUP` | `true` (dev), `false` (productie) | Open aanmelding zonder code |
+| `SIGNUP_CODE` | | Uitnodigingscode voor `POST /v1/auth/register` (en de legacy `POST /v1/accounts`), timing-safe vergeleken |
+| `DEMO_SOURCE` | `true` (dev), `false` (productie) | De fictieve demobibliotheek als bron per account |
+| `VERIFY_URL` | `https://prismastream.patrickudo.nl/activate` | Url die een tv bij de inlogcode toont |
+| `TMDB_API_KEY` | | Optioneel: server-side TMDB-verrijking, gedeelde cache. `TMDB_MAX_TITLES` (400) per build |
+| `CATALOG_ENABLED` | `true` | Catalogus, bronnen en play-urls aan/uit |
+| `CATALOG_LANG` | `nl` | Taal voor overzichten en afleveringstitels in de samengevoegde catalogus |
+| `CATALOG_REFRESH_HOURS` | `12` | Automatisch vernieuwen per account met bronnen (gespreid, `0` = uit) |
+| `CATALOG_BUILD_MEMORY_MB` | `320` | Heap-limiet van de build-worker |
+| `M3U_MAX_BYTES` / `JSON_MAX_BYTES` / `XMLTV_MAX_BYTES` | 200 / 200 / 300 MB | Maximale downloadgroottes (na uitpakken) |
+| `FETCH_TIMEOUT_MS` | `30000` | Time-out voor verbinden en headers naar IPTV-servers |
+| `FETCH_USER_AGENT` | `PrismaStream/1.0` | User-Agent richting IPTV-servers |
+| `PROXY_ENABLED` | `true` | `/v1/proxy` en `?via=proxy` aan/uit |
+| `PROXY_ALLOW_PRIVATE` | `false` | **Gevaarlijk.** Privé-/loopback-adressen toestaan (alleen tests of een gesloten LAN) |
+| `PROXY_MAX_BYTES` / `PROXY_TIMEOUT_MS` | 100 MB / 20 s | Limieten van `/v1/proxy` (de play-proxy heeft geen groottelimiet: live-TS stopt nooit) |
+| `RATE_LIMIT_PER_MIN` / `PROXY_RATE_LIMIT_PER_MIN` | 600 / 1200 | Verzoeken per minuut per IP (API) en per apparaat (proxy en play) |
+| `BODY_LIMIT_BYTES`, `MAX_DOCS_PER_ACCOUNT`, `MAX_DEVICES_PER_ACCOUNT`, `LOG` | 2 MB, 1000, 20, `true` | Overige limieten en het toegangslog |
 
-Standaard toegestane origins: `capacitor://localhost`, `ionic://localhost`, `http://localhost`,
-`https://localhost` (Capacitor op iOS en Android) en `http://localhost:5173` / `:4173`
-(Vite dev en preview). Voeg de origin van je eigen webversie toe via `CORS_ORIGINS`.
+## Endpoints
 
-## Deployen
+Alle antwoorden zijn JSON; fouten: `{ "error": "<code>", "message": "…" }`. Auth = `Authorization: Bearer pst_…`.
 
-### Docker
+**Accounts en apparaten**
 
-```bash
-cd server
-docker build -t prismastream-sync .
-docker run -d --name prismastream-sync -p 8787:8787 \
-  -v prismastream-sync-data:/data \
-  -e PUBLIC_URL=https://sync.voorbeeld.nl \
-  -e CORS_ORIGINS=https://app.voorbeeld.nl \
-  -e TRUST_PROXY=true \
-  prismastream-sync
+| Methode en pad | Auth | Wat |
+| --- | --- | --- |
+| `GET /v1/health` | nee | `{ ok, service, version, time }` |
+| `POST /v1/auth/prelogin` | nee | `{ email }` → `{ salt, iterations, kdf }`. Onbekend e-mailadres: deterministische nep-salt |
+| `POST /v1/auth/register` | nee | `{ email, authKey, salt, iterations, signupCode, deviceName }` → `201 { accountId, token, deviceId, salt, kdf }` |
+| `POST /v1/auth/login` | nee | `{ email, authKey, deviceName }` → `{ accountId, token, deviceId, salt, kdf }`; altijd dezelfde fout `401 invalid_credentials` |
+| `POST /v1/auth/logout` | ja | Trekt het token van dit apparaat in |
+| `POST /v1/auth/password` | ja | `{ oldAuthKey, newAuthKey, newSalt, newIterations }` → `{ ok, revokedDevices, salt, kdf }`; andere apparaten worden afgemeld |
+| `POST /v1/auth/device-code` | nee | Tv: `{ publicKey, deviceName }` → `201 { userCode, deviceCode, verifyUrl, verifyUrlComplete, expiresIn: 600, interval: 3 }` |
+| `GET /v1/auth/device-code/:userCode` | ja | `{ userCode, deviceName, publicKey, expiresAt }` |
+| `POST /v1/auth/device-code/:userCode/approve` | ja | `{ sealedKey, ephemeralPublicKey }` → `{ ok }` |
+| `POST /v1/auth/device-token` | nee | Tv pollt `{ deviceCode }` → `400 authorization_pending / slow_down / expired_token / invalid_grant`, of `{ accountId, token, deviceId, sealedKey, ephemeralPublicKey, salt, kdf }` |
+| `GET /v1/me`, `DELETE /v1/account` | ja | Account-info; account met alles verwijderen |
+| `GET /v1/devices`, `DELETE /v1/devices/:id` | ja | Apparaten bekijken en afmelden |
+| `POST /v1/accounts`, `/v1/pairing-codes`, `/v1/devices/pair` | | Legacy (wachtwoordzin-flow); `POST /v1/accounts` vraagt nu ook om `signupCode` als aanmelden dicht is |
+| `GET/PUT /v1/docs…`, `GET /v1/events` | ja | E2E-versleutelde documenten en long-poll (ongewijzigd) |
+
+**Bronnen en catalogus** (zie `docs/BACKEND.md` voor de vormen)
+
+| Methode en pad | Wat |
+| --- | --- |
+| `GET /v1/sources` | Bronnen zonder secrets (playlist- en EPG-url gemaskeerd), met `lastSyncAt`, `lastError`, `errorCode`, `lastWarning`, `stats`, `account` |
+| `POST /v1/sources/test` | Test zonder opslaan: `{ ok, movies, series, channels, expiresAt?, status?, warnings }` of `{ ok:false, code, message, expiresAt? }` |
+| `POST /v1/sources`, `PATCH /v1/sources/:id`, `DELETE /v1/sources/:id` | Opslaan (wachtwoord versleuteld) en vernieuwen; `DELETE sample` zet de demo alleen uit |
+| `POST /v1/catalog/refresh` | `{ force?, sourceId? }` → `202` |
+| `GET /v1/catalog/meta` | Status, aantallen, genres, talen, groepen (`?kids=1`) |
+| `GET /v1/catalog/home` | `?kids=1&limit=20` |
+| `GET /v1/catalog/titles` | `?kind&genre&lang&sort=popular\|new\|az\|year&kids&limit&cursor` of `?ids=a,b` |
+| `GET /v1/catalog/titles/:id` | Volledige titel met play-urls, `upstreamHttp` per variant en `similar` |
+| `GET /v1/catalog/search` | `?q&limit&kids` |
+| `POST /v1/catalog/recommend` | `{ history, favorites, limit?, kids? }` |
+| `GET /v1/catalog/channels` | `?group&lang&kids` (met play-urls) |
+| `GET /v1/catalog/epg` | `?channels=<epgId,…>&from&to` (max. 50 zenders, 48 uur) |
+| `GET /v1/catalog/nownext` | `?channels=<channelId,…>` |
+| `GET /v1/play-token`, `POST /v1/play-token` | Huidig play-token, of een nieuw (oude play-urls vervallen) |
+| `GET /v1/play/:playToken/:variant` | `302` naar de echte stream; `?via=proxy` streamt hem door |
+| `POST /v1/proxy-token`, `GET /v1/proxy/:token?url=` | Bestaande CORS-proxy |
+
+Lijsten geven alleen lichte `TitleCard`s. Alle catalogus-GETs hebben een `ETag`
+(`If-None-Match` → `304`) en `Cache-Control: private, no-cache`.
+
+## Architectuur van de catalogus
+
+```
+bron-urls ──(worker thread, 1 tegelijk)──▶ cache/<account>/<bron>/catalog.ndjson.gz (12 u)
+ (Xtream, M3U, XMLTV)                       cache/<account>/<bron>/epg.ndjson.gz     (6 u)
+                                                     │
+                       buildCatalog() uit de gedeelde kern (server/vendor/prisma-core.mjs)
+                                                     │  één transactie
+                                                     ▼
+ catalog.db: cat_titles (TitleCard-JSON + kolommen kind, genres, talen, populariteit, addedAt,
+             jaar, sorteertitel, kids), cat_details (volledige titel, deflate), cat_variants
+             (variant-id → gemaskeerde url), cat_channels, cat_epg, cat_series (lazy afleveringen),
+             tmdb_* (gedeeld)
+                                                     │
+ hoofdthread: SQL voor lijsten/filters/cursor, LRU (max. 2 accounts) met een lichte titellijst
+             en de zoekindex, lazy Xtream-series bij /titles/:id, play-redirects
 ```
 
-De database staat in het volume `/data`. Maak er regelmatig een back-up van (de inhoud is
-versleuteld, maar zonder back-up ben je bij verlies alles kwijt).
+- **Waarom SQLite:** lijsten, filters en cursor-paginering zijn indexqueries over lichte rijen,
+  een detailpagina leest één gecomprimeerde rij, en niets hoeft de hele catalogus in het
+  geheugen te hebben. `catalog.db` is een cache: weggooien kost alleen een nieuwe build.
+- **Wachtrij:** maximaal één build tegelijk. Elke build draait in een eigen worker thread met een
+  eigen heap-limiet (`CATALOG_BUILD_MEMORY_MB`); een te grote catalogus laat dus de worker
+  falen ("te groot voor het geheugenbudget"), niet de API. Na afloop is al het geheugen terug.
+- **Downloads streamen:** Xtream-lijsten worden item voor item uit de JSON-stroom gelezen, M3U
+  regel voor regel geparsed en XMLTV met saxes (gzip herkend), gefilterd op het venster
+  (nu − 6 u … nu + 48 u) en op zenders die bestaan. Lijsten worden na elkaar opgehaald (veel
+  accounts staan maar één verbinding toe).
+- **Vernieuwen:** elke 12 uur per account met echte bronnen (gespreid met een vaste jitter per
+  account; accounts zonder activiteit in 30 dagen worden overgeslagen), plus op verzoek. Bij een
+  storing bij de provider blijft de oude cache in gebruik (`lastError` staat op de bron).
+- **Lazy series:** Xtream-afleveringen (`get_series_info`) worden bij het eerste
+  `GET /titles/:id` opgehaald, samengevoegd met dezelfde logica als de apps, en 12 uur bewaard
+  (ook over builds heen).
+- **TMDB:** met `TMDB_API_KEY` verrijkt de build na afloop de populairste titels; resultaten
+  staan gedeeld in `tmdb_cache`, `tmdb_meta` en `tmdb_keys` (metadata is publiek).
 
-### Achter een reverse proxy (aanbevolen)
-
-Zet de server altijd achter **HTTPS** (Caddy, nginx, Traefik). Voorbeeld met Caddy:
-
-```
-sync.voorbeeld.nl {
-	reverse_proxy 127.0.0.1:8787
-}
-```
-
-Zet dan `TRUST_PROXY=true` en `PUBLIC_URL=https://sync.voorbeeld.nl`. Long-poll-verzoeken
-(`/v1/events`) blijven tot 25 seconden open; de standaard time-outs van Caddy en nginx (60 s)
-zijn ruim genoeg. De rate-limits zitten in het geheugen van één proces: draai één instantie,
-of voeg ook rate-limiting toe in de reverse proxy.
+**Gemeten met 50.000 items** (40.000 VOD-items, 5.000 series, 5.000 zenders; test
+`test/memory.test.ts`, mock-provider in een apart proces): build ± 2 s, piek-RSS van het hele
+serverproces ± 390–440 MB (doel < 450 MB), lijstpagina 1–2 ms, detail ± 5 ms, eerste zoekopdracht
+± 180 ms (bouwt de index), daarna ± 2 ms. In de Docker-image (`--memory 768m`, twee accounts van
+50.000 items): piek-RSS (VmHWM) 386 MB, `catalog.db` ± 60 MB per account.
 
 ## Beveiligingsmodel
 
-**Wat de server weet:** per account een id, een willekeurige salt (16 bytes) en de
-KDF-parameters; per apparaat een naam, aanmaak- en laatst-gezien-tijd en de SHA-256-hash
-van zijn token; per document het id (`profiles`, `settings`, `sources`, `data:<profiel-id>`,
-`meta:keycheck`), een versienummer, een volgnummer, een tijdstempel en een versleutelde blob.
-Het aantal profielen en de grootte van de documenten zijn dus zichtbaar, de inhoud niet.
+**Wat de server ziet (bewuste keuze):** de IPTV-inloggegevens. Hij moet de bronnen zelf
+ophalen. Wachtwoorden en volledige playlist-/EPG-urls staan versleuteld in de tabel `sources`
+(AES-256-GCM met een subsleutel van `SERVER_KEY`, gebonden aan account en bron). In de caches en
+in `catalog.db` staan stream-urls **gemaskeerd**: de inloggegevens zijn vervangen door
+plaatshouders en worden pas bij een play-redirect ingevuld. Wie de schijf heeft maar niet de
+`SERVER_KEY`, kan de wachtwoorden dus niet lezen. Wie de draaiende server (of de sleutel en de
+schijf) heeft, wel. De server ziet ook welke catalogus een account heeft en welke streams een
+apparaat opvraagt (play-redirects).
 
-**Wat de server niet weet:** de wachtwoordzin, de sleutel, en dus niets van profielen,
-favorieten, kijkgedrag, instellingen of IPTV-wachtwoorden.
+**Wat de server niet ziet:** het accountwachtwoord en de E2E-sleutel. De client stuurt alleen
+`authKey` (HKDF uit de PBKDF2-hoofdsleutel); de server bewaart `scrypt(authKey)`. Profielen,
+favorieten, voortgang en geschiedenis blijven end-to-end versleuteld in `/v1/docs`. Bij de
+tv-login reist de hoofdsleutel alleen ECDH-versleuteld naar de publieke sleutel van de tv.
 
-**Versleuteling (in de app):**
+**Inloggen:** generieke foutmelding, nep-salt voor onbekende e-mailadressen (geen
+account-enumeratie), scrypt ook voor onbekende adressen (gelijke tijd), lockout na 10 mislukte
+pogingen per e-mailadres (15 min) en rate-limits per IP. Aanmelden alleen met `SIGNUP_CODE`.
 
-1. Wachtwoordzin → PBKDF2-HMAC-SHA256, 600.000 iteraties (minimaal 310.000, afgedwongen
-   door client en server), met de salt van het account → 256-bit hoofdsleutel.
-2. HKDF-SHA256 leidt daaruit een AES-256-GCM-sleutel (documenten) en een HMAC-sleutel
-   (vingerafdrukken van IPTV-wachtwoorden, om wijzigingen te zien zonder ze op te slaan) af.
-   Beide zijn niet-exporteerbare `CryptoKey`s, bewaard in IndexedDB van de app.
-3. Elk document: willekeurige 96-bit IV, optioneel gzip vóór versleuteling, en
-   _additional authenticated data_ `prismastream-sync:v1:<accountId>:<docId>`. De server kan
-   documenten dus niet ongemerkt verwisselen of tussen accounts verplaatsen.
-4. Een vast controledocument (`meta:keycheck`) laat een nieuw apparaat controleren of de
-   ingevoerde wachtwoordzin klopt.
+**Apparaten:** API-tokens (`pst_`) alleen in de `Authorization`-header en als SHA-256-hash
+opgeslagen. Play-tokens (`pt_`) mogen in urls staan, zijn per apparaat, deterministisch uit
+`SERVER_KEY` afgeleid (de server bewaart alleen de hash) en intrekbaar (`POST /v1/play-token`,
+of het apparaat afmelden). Een play-token geeft alleen toegang tot streams van het eigen account.
 
-**Authenticatie:** elk apparaat krijgt een eigen bearer-token (256 bits, prefix `pst_`), alleen
-in de `Authorization`-header, nooit in een url. De server bewaart alleen de SHA-256-hash. In de
-app staat het token in de secure storage (iOS Keychain / Android Keystore) of, in de browser,
-in IndexedDB; nooit in localStorage of logs. Een apparaat ontkoppelen trekt het token direct in.
-Na 30 mislukte authenticaties binnen 10 minuten blokkeert de server het IP-adres tijdelijk.
+**Geen inloggegevens in logs of antwoorden:** het toegangslog schrijft paden zonder query,
+zonder proxy- en play-tokens en zonder play-doelen. Foutmeldingen van bronnen gaan door
+`redactUrl`/`redactText` (user/pass in paden, query's en userinfo worden `***`). Afbeeldingsurls
+waarin een wachtwoord zit, worden weggelaten. Bij `?via=proxy` herschrijft de server
+HLS-playlists naar verzegelde `/v1/play/<token>/s/…`-urls, zodat ook segment- en sleutel-urls
+geen inloggegevens prijsgeven.
 
-**Koppelen:** een ingelogd apparaat vraagt een koppelcode aan (8 tekens uit een alfabet van 31
-tekens zonder verwarrende letters, ±39,6 bits). De code is 10 minuten geldig, eenmalig, wordt
-gehasht opgeslagen, en per IP zijn er maximaal 10 koppelpogingen per 10 minuten. Per account
-zijn er maximaal 5 actieve codes. De wachtwoordzin vult de gebruiker zelf in; die gaat nooit
-over het netwerk.
+**SSRF:** bron-urls zijn bewust externe servers, maar privé-, loopback-, link-local- (cloud
+metadata) en gereserveerde adressen worden geweigerd, bij elke redirect opnieuw en via de
+DNS-lookup van de verbinding zelf (geen DNS-rebinding). `PROXY_ALLOW_PRIVATE` zet dit uit
+(alleen voor tests).
 
-**Overig:** body-limit (2 MB), rate-limits per IP en per apparaat, nette JSON-fouten zonder
-stacktraces, `Cache-Control: no-store` op API-antwoorden, `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: no-referrer`. Het verwijderen van het laatste apparaat verwijdert het account
-met alle documenten.
+**Overig:** body-limit, rate-limits (API per IP, proxy/play per apparaat, bron-tests per
+account), `Cache-Control` op alles, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `X-Accel-Buffering: no` op streams. Draait als non-root.
 
-**Beperkingen:** wie de wachtwoordzin kwijt is, kan de gesynchroniseerde gegevens niet
-herstellen (de gegevens op de apparaten blijven wel bestaan). De wachtwoordzin wijzigen wordt
-nog niet ondersteund (sync uitzetten en een nieuw account starten kan wel). De server kan
-documenten niet lezen, maar wel weigeren of terugzetten naar een oudere versie die hij eerder
-heeft gezien (geen bescherming tegen rollback door een kwaadwillende server).
+## Deployen (Docker)
 
-## CORS-proxy voor de webversie
+Build-context is de **repo-root** (de gedeelde kern wordt in de image gebundeld):
 
-IPTV-servers sturen zelden CORS-headers, dus de webversie heeft een proxy nodig (op iOS en
-Android is die niet nodig). De proxy werkt alleen voor geauthenticeerde apparaten, met een
-**apart proxy-token** (prefix `ppx_`) dat uitsluitend voor de proxy geldig is. Dat token staat in
-de url (een `<video>`-element kan geen headers meesturen); het API-token komt nooit in een url.
-
-```
-POST /v1/proxy-token            (Authorization: Bearer pst_…)
-→ { "proxyToken": "ppx_…", "prefix": "https://sync.voorbeeld.nl/v1/proxy/ppx_…?url=" }
-
-GET /v1/proxy/<proxyToken>?url=<encodeURIComponent(doel-url)>
+```bash
+docker build -f server/Dockerfile -t prismastream-server .
 ```
 
-De prefix werkt met de prefix-stijl van de bronnenmodule: `${prefix}${encodeURIComponent(url)}`.
-In de app levert `getSyncProxyPrefix()` uit `#lib/sync/index.ts` deze prefix (of `null` zonder
-sync). Een nieuw proxy-token aanvragen maakt het vorige ongeldig.
+Voorbeeld (Compose, achter Nginx Proxy Manager op het netwerk `proxy`):
 
-- Alleen `GET` en `HEAD`, alleen `http:` en `https:`.
-- **SSRF-bescherming:** de hostnaam wordt opgelost en _alle_ adressen worden gecontroleerd;
-  loopback, privé-netwerken (10/8, 172.16/12, 192.168/16, fc00::/7), link-local (169.254/16,
-  inclusief cloud-metadata), CGNAT, multicast, gereserveerde en documentatiebereiken en
-  IPv4-in-IPv6-varianten worden geweigerd (`403 blocked_address`). De controle zit in de
-  `lookup` van de verbinding zelf, dus DNS-rebinding tussen controle en verbinden werkt niet.
-  Redirects (max. 5) worden handmatig gevolgd en opnieuw gecontroleerd.
-- Doorgegeven request-headers: `Range`, `If-Range`, `If-None-Match`, `If-Modified-Since`,
-  `Accept`, `User-Agent`. Geen cookies of `Authorization`.
-- Antwoorden worden streamend doorgegeven (ook `206 Partial Content` voor seeken), maximaal
-  `PROXY_MAX_BYTES`, met time-outs.
-- **HLS:** een playlist met `#EXT-X-`-tags wordt herschreven zodat segmenten, sub-playlists en
-  sleutels (`URI="…"`) ook via de proxy lopen. Gewone IPTV-zenderlijsten (`#EXTINF` zonder
-  `#EXT-X-`) blijven ongewijzigd. Zet `raw=1` vóór `url=` om herschrijven uit te zetten:
-  `…/v1/proxy/<token>?raw=1&url=…`.
-- Let op: met `ALLOW_SIGNUP=true` kan iedereen die de server kan bereiken een account en dus
-  een proxy-token aanmaken. Voor een publiek bereikbare server: zet `ALLOW_SIGNUP=false` nadat je
-  je account hebt gemaakt, of zet de proxy uit met `PROXY_ENABLED=false`.
+```yaml
+services:
+  backend:
+    image: prismastream-server
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      NODE_ENV: production
+      PUBLIC_URL: https://backend.prismastream.patrickudo.nl
+      CORS_ORIGINS: https://prismastream.patrickudo.nl
+      TRUST_PROXY: "true"
+      DEMO_SOURCE: "false"
+      SIGNUP_CODE: ${SIGNUP_CODE}
+      SERVER_KEY_FILE: /run/secrets/server_key
+      # TMDB_API_KEY: ${TMDB_API_KEY}
+    secrets: [server_key]
+    volumes: [backend-data:/data]
+    networks: [proxy]
+secrets:
+  server_key:
+    file: ./server_key.txt     # openssl rand -base64 32 > server_key.txt; chmod 600
+volumes:
+  backend-data:
+networks:
+  proxy:
+    external: true
+```
 
-## API
+In Nginx Proxy Manager: proxy host `backend.prismastream.patrickudo.nl` → `backend:8787`,
+SSL aan, en bij *Advanced* `proxy_buffering off; proxy_read_timeout 3600s;` (streams en
+long-poll). De image zet `NODE_OPTIONS=--max-old-space-size=512` en heeft een healthcheck.
 
-Alle antwoorden zijn JSON. Fouten: `{ "error": "<code>", "message": "…" }`.
+## Back-up
 
-| Methode en pad              | Auth   | Beschrijving                                                                                                                                                                              |
-| --------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /v1/health`            | nee    | `{ ok, service: "prismastream-sync", version }`                                                                                                                                           |
-| `POST /v1/accounts`         | nee    | Body `{ deviceName?, kdf? }` → `201 { accountId, deviceId, token, salt, kdf }`                                                                                                             |
-| `GET /v1/me`                | ja     | `{ accountId, deviceId, salt, kdf, cursor }`                                                                                                                                               |
-| `DELETE /v1/account`        | ja     | Verwijdert account, apparaten en documenten → `204`                                                                                                                                       |
-| `POST /v1/pairing-codes`    | ja     | → `201 { code, expiresAt }` (8 tekens, 10 min, eenmalig)                                                                                                                                   |
-| `POST /v1/devices/pair`     | nee    | Body `{ code, deviceName? }` (hoofdletters/streepjes maken niet uit) → `201 { accountId, deviceId, token, salt, kdf }`; `400 invalid_code`, `409 device_limit`, `429 rate_limited`           |
-| `GET /v1/devices`           | ja     | `{ devices: [{ id, name, createdAt, lastSeenAt, current }] }`                                                                                                                             |
-| `DELETE /v1/devices/:id`    | ja     | Ontkoppelt een apparaat van hetzelfde account → `{ ok, accountDeleted }` (laatste apparaat ⇒ account weg)                                                                                  |
-| `GET /v1/docs?since=&limit=` | ja    | Gewijzigde documenten na cursor `since` (oplopend): `{ docs: [{ docId, version, updatedAt, deleted, blob }], cursor, more }`; `limit` max. 500                                             |
-| `GET /v1/docs/:docId`       | ja     | Eén document of `404`                                                                                                                                                                     |
-| `PUT /v1/docs/:docId`       | ja     | Header `If-Match: "<versie>"` (`0` = nieuw), body `{ blob }` of `{ deleted: true }` → `{ docId, version, updatedAt, cursor }`; `409 conflict` met `current` (serverversie); `428` zonder If-Match |
-| `GET /v1/events?since=&timeout=` | ja | Long-poll (max. 55 s, standaard 25 s): `{ cursor, changed }` zodra er iets na `since` is gewijzigd                                                                                       |
-| `POST /v1/proxy-token`      | ja     | Nieuw proxy-token → `201 { proxyToken, prefix }`                                                                                                                                           |
-| `GET /v1/proxy/:token?url=` | proxy  | CORS-proxy, zie hierboven                                                                                                                                                                 |
-
-`docId`: `[A-Za-z0-9:_.-]{1,128}`. `blob`: base64. De cursor is een per account oplopend
-volgnummer; elke `PUT` verhoogt hem. Versies beginnen bij 1.
+- **Belangrijk:** `/data/prismastream-sync.db` (accounts, apparaten, E2E-docs, bronnen met
+  versleutelde wachtwoorden) **en de `SERVER_KEY`**. Zonder de sleutel zijn de opgeslagen
+  IPTV-wachtwoorden niet meer te ontsleutelen (de gebruiker moet ze dan opnieuw invoeren). Bewaar
+  de sleutel apart van de back-up van de data.
+- **Niet nodig:** `/data/catalog.db` en `/data/cache/` (worden opnieuw opgebouwd).
+- Consistente kopie terwijl de server draait:
+  `docker compose exec backend node -e "new (require('node:sqlite').DatabaseSync)('/data/prismastream-sync.db').exec(\"VACUUM INTO '/data/backup.db'\")"`
+  en kopieer daarna `/data/backup.db`.
 
 ## Testen
 
-```bash
-npm test
-```
-
-De tests draaien tegen een in-memory database en een lokale upstream-server (voor de
-proxytests met `proxyAllowPrivate` alleen binnen de test). Ze dekken: accounts en
-KDF-validatie, tokens alleen gehasht, auth-fouten en IP-blokkade, body-limit, koppelen
-(eenmalig, verlopen, rate-limit), apparaten ontkoppelen, versiebeheer en `409`-conflicten,
-paginering, verwijdermarkeringen, quotum, long-poll, en de proxy (tokens, methodes, schema's,
-SSRF-blokkade inclusief DNS, redirects, Range, HLS-herschrijving, maximale grootte).
+`npm test` draait alles tegen in-memory sync-databases, een tijdelijke `DATA_DIR` en een lokale
+nep-IPTV-server (`test/mock-iptv.ts`: Xtream, M3U, XMLTV, HLS, VOD met Range). Alleen de tests
+zetten `PROXY_ALLOW_PRIVATE`. Gedekt: accounts, zero-knowledge-login (nep-salt, generieke
+fouten, lockout), wachtwoord wijzigen, tv-login met echte ECDH (WebCrypto), bronnen-CRUD met
+versleuteling (geen wachtwoord in database, caches of antwoorden), foutcodes van bronnen,
+Xtream- en M3U-fetch, catalogus-build, paginering, filters en cursors, kindermodus, zoeken,
+aanbevelingen, EPG-venster en now/next, ETag/304, play-redirects (geen inloggegevens in logs),
+`?via=proxy` (HLS herschrijven, Range), play-token intrekken, aanmelden met code, de bestaande
+sync- en proxytests, en het geheugen bij 50.000 items.

@@ -5,8 +5,8 @@ import { originAllowed } from '../src/config.ts';
 import { newAccount, setup } from './helpers.ts';
 
 let ctx: ReturnType<typeof setup> | undefined;
-afterEach(() => {
-	ctx?.dispose();
+afterEach(async () => {
+	await ctx?.dispose();
 	ctx = undefined;
 });
 

@@ -3,6 +3,10 @@
 export interface Config {
 	port: number;
 	host: string;
+	/** NODE_ENV=production: stricter defaults (no open signup, SERVER_KEY required). */
+	production: boolean;
+	/** Root for all server data: sync database, catalog database, caches, dev key. */
+	dataDir: string;
 	dbPath: string;
 	/** Exact origins or simple globs ("http://localhost:*"). "*" allows every origin. */
 	corsOrigins: string[];
@@ -25,6 +29,35 @@ export interface Config {
 	maxDevicesPerAccount: number;
 	pairingTtlMs: number;
 	log: boolean;
+	/** Invitation code for POST /v1/accounts when signup is closed (timing-safe compare). */
+	signupCode?: string;
+	/** Base64 32-byte server key (SERVER_KEY) or a file with it (SERVER_KEY_FILE). */
+	serverKey?: string | Uint8Array;
+	serverKeyFile?: string;
+	/** The fictional demo library as a source per account (never in production). */
+	demoSource: boolean;
+	/** Base url shown to TVs for the device login (verifyUrl). */
+	verifyUrl: string;
+	/** Server-side catalog (sources, merge, cache, play urls). */
+	catalogEnabled: boolean;
+	/** Language for overviews/episode titles in the merged catalog. */
+	catalogLang: string;
+	/** Hours between scheduled refreshes per account (0 = no scheduler). */
+	catalogRefreshHours: number;
+	/** Heap limit (MB) of the worker thread that runs a catalog build. */
+	buildMemoryMb: number;
+	/** Run catalog builds inline instead of in a worker thread (tests/debugging only). */
+	buildInline: boolean;
+	/** Optional TMDB key for server-side enrichment (shared metadata cache). */
+	tmdbApiKey?: string;
+	/** TMDB lookups per build (rate limited by the client). */
+	tmdbMaxTitles: number;
+	/** Limits for upstream IPTV downloads. */
+	m3uMaxBytes: number;
+	jsonMaxBytes: number;
+	xmltvMaxBytes: number;
+	fetchTimeoutMs: number;
+	fetchUserAgent: string;
 }
 
 export const DEFAULT_CORS_ORIGINS = [
@@ -55,14 +88,18 @@ export function loadConfig(
 		.map((s) => s.trim())
 		.filter(Boolean);
 	const replace = bool(env.CORS_REPLACE_DEFAULTS, false);
+	const production = (env.NODE_ENV ?? '').toLowerCase() === 'production';
+	const dataDir = (env.DATA_DIR || './data').replace(/\/+$/, '') || '.';
 	return {
 		port: int(env.PORT, 8787),
 		host: env.HOST || '0.0.0.0',
-		dbPath: env.DB_PATH || './data/prismastream-sync.db',
+		production,
+		dataDir,
+		dbPath: env.DB_PATH || `${dataDir}/prismastream-sync.db`,
 		corsOrigins: replace ? extra : [...DEFAULT_CORS_ORIGINS, ...extra],
 		publicUrl: env.PUBLIC_URL ? env.PUBLIC_URL.replace(/\/+$/, '') : undefined,
 		trustProxy: bool(env.TRUST_PROXY, false),
-		allowSignup: bool(env.ALLOW_SIGNUP, true),
+		allowSignup: bool(env.ALLOW_SIGNUP, !production),
 		proxyEnabled: bool(env.PROXY_ENABLED, true),
 		proxyAllowPrivate: bool(env.PROXY_ALLOW_PRIVATE, false),
 		proxyMaxBytes: int(env.PROXY_MAX_BYTES, 100 * 1024 * 1024),
@@ -74,6 +111,23 @@ export function loadConfig(
 		maxDevicesPerAccount: int(env.MAX_DEVICES_PER_ACCOUNT, 20),
 		pairingTtlMs: 10 * 60 * 1000,
 		log: bool(env.LOG, true),
+		signupCode: env.SIGNUP_CODE?.trim() || undefined,
+		serverKey: env.SERVER_KEY?.trim() || undefined,
+		serverKeyFile: env.SERVER_KEY_FILE?.trim() || undefined,
+		demoSource: bool(env.DEMO_SOURCE, !production),
+		verifyUrl: env.VERIFY_URL || 'https://prismastream.patrickudo.nl/activate',
+		catalogEnabled: bool(env.CATALOG_ENABLED, true),
+		catalogLang: (env.CATALOG_LANG || 'nl').toLowerCase(),
+		catalogRefreshHours: int(env.CATALOG_REFRESH_HOURS, 12),
+		buildMemoryMb: int(env.CATALOG_BUILD_MEMORY_MB, 320),
+		buildInline: bool(env.CATALOG_BUILD_INLINE, false),
+		tmdbApiKey: env.TMDB_API_KEY?.trim() || undefined,
+		tmdbMaxTitles: int(env.TMDB_MAX_TITLES, 400),
+		m3uMaxBytes: int(env.M3U_MAX_BYTES, 200 * 1024 * 1024),
+		jsonMaxBytes: int(env.JSON_MAX_BYTES, 200 * 1024 * 1024),
+		xmltvMaxBytes: int(env.XMLTV_MAX_BYTES, 300 * 1024 * 1024),
+		fetchTimeoutMs: int(env.FETCH_TIMEOUT_MS, 30_000),
+		fetchUserAgent: env.FETCH_USER_AGENT || 'PrismaStream/1.0',
 		...overrides
 	};
 }

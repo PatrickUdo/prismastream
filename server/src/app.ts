@@ -2,7 +2,13 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
+import { registerAuthRoutes, signupAllowed } from './auth.ts';
+import { redactText } from './catalog/core.ts';
+import { registerCatalogRoutes } from './catalog/routes.ts';
+import { CatalogService } from './catalog/service.ts';
+import { SourceRepo } from './catalog/sources.ts';
 import { originAllowed, type Config } from './config.ts';
+import { deriveKeys, loadMasterKey, type ServerKeys } from './keys.ts';
 import { EventHub } from './events.ts';
 import { parseTarget, ProxyError, proxyFetch } from './proxy.ts';
 import { RateLimiter } from './ratelimit.ts';
@@ -17,10 +23,7 @@ import {
 	sha256hex
 } from './util.ts';
 
-type Env = {
-	Bindings: { incoming?: { socket?: { remoteAddress?: string } } };
-	Variables: { device: DeviceRow };
-};
+import type { Env } from './env.ts';
 
 export const MIN_KDF_ITERATIONS = 310_000;
 export const DEFAULT_KDF: Kdf = { alg: 'PBKDF2-SHA256', iterations: 600_000 };
@@ -34,7 +37,11 @@ export interface AppContext {
 	store: Store;
 	events: EventHub;
 	limiter: RateLimiter;
-	dispose(): void;
+	keys: ServerKeys;
+	sources: SourceRepo;
+	/** Server-side catalog (undefined when CATALOG_ENABLED=false). */
+	catalog?: CatalogService;
+	dispose(): Promise<void>;
 }
 
 function err(c: Context, status: number, error: string, message?: string, extra?: object) {
@@ -56,17 +63,36 @@ function deviceName(v: unknown): string {
 	return (s || 'Apparaat').slice(0, 64);
 }
 
-/** Path for logs with secrets removed (proxy token, query string). */
+/** Path for logs with secrets removed (proxy/play tokens, play targets, query string). */
 export function redactPath(path: string): string {
-	return path.replace(/^\/v1\/proxy\/[^/?]+/, '/v1/proxy/***').replace(/\?.*$/, '');
+	return path
+		.replace(/^\/v1\/proxy\/[^/?]+/, '/v1/proxy/***')
+		.replace(/^\/v1\/play\/[^?]*/, '/v1/play/***')
+		.replace(/^\/v1\/auth\/device-code\/[^/?]+/, '/v1/auth/device-code/***')
+		.replace(/\?.*$/, '');
 }
 
 export function createApp(config: Config, store = new Store(config.dbPath)): AppContext {
 	const app = new Hono<Env>();
 	const events = new EventHub();
 	const limiter = new RateLimiter();
-	const purgeTimer = setInterval(() => store.purgeExpiredPairingCodes(), 5 * 60_000);
+	const keys = deriveKeys(loadMasterKey(config));
+	const sources = new SourceRepo(store, keys.secrets, {
+		demo: config.demoSource,
+		allowPrivate: config.proxyAllowPrivate
+	});
+	const catalog = config.catalogEnabled
+		? new CatalogService({ config, store, keys, sources })
+		: undefined;
+	const purgeTimer = setInterval(() => {
+		store.purgeExpiredPairingCodes();
+		store.purgeExpiredDeviceCodes();
+	}, 5 * 60_000);
 	purgeTimer.unref();
+	/** After an account was deleted (directly or with its last legacy device). */
+	const accountGone = (accountId: string) => {
+		if (!store.getAccount(accountId)) catalog?.purgeAccount(accountId);
+	};
 
 	const clientIp = (c: Context<Env>): string => {
 		if (config.trustProxy) {
@@ -108,8 +134,15 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 	app.use(
 		cors({
 			origin: (origin) => (origin && originAllowed(origin, config.corsOrigins) ? origin : null),
-			allowMethods: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-			allowHeaders: ['Authorization', 'Content-Type', 'If-Match', 'Range', 'If-Range'],
+			allowMethods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+			allowHeaders: [
+				'Authorization',
+				'Content-Type',
+				'If-Match',
+				'If-None-Match',
+				'Range',
+				'If-Range'
+			],
 			exposeHeaders: [
 				'ETag',
 				'Content-Length',
@@ -126,7 +159,8 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		await next();
 		c.header('X-Content-Type-Options', 'nosniff');
 		c.header('Referrer-Policy', 'no-referrer');
-		if (!c.req.path.startsWith('/v1/proxy/')) c.header('Cache-Control', 'no-store');
+		const streaming = c.req.path.startsWith('/v1/proxy/') || c.req.path.startsWith('/v1/play/');
+		if (!streaming && !c.res.headers.get('cache-control')) c.header('Cache-Control', 'no-store');
 	});
 
 	app.use(
@@ -139,7 +173,12 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 
 	// Per-IP rate limit for the API (the proxy has its own per-device limit).
 	app.use('/v1/*', async (c, next) => {
-		if (c.req.method === 'OPTIONS' || c.req.path.startsWith('/v1/proxy/')) return next();
+		if (
+			c.req.method === 'OPTIONS' ||
+			c.req.path.startsWith('/v1/proxy/') ||
+			c.req.path.startsWith('/v1/play/')
+		)
+			return next();
 		const retry = limiter.hit('ip:' + clientIp(c), config.rateLimitPerMin, 60_000);
 		if (retry) return tooMany(c, retry);
 		return next();
@@ -177,10 +216,11 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 	);
 
 	app.post('/v1/accounts', async (c) => {
-		if (!config.allowSignup) return err(c, 403, 'signup_disabled', 'Signup is disabled');
 		const retry = limiter.hit('signup:' + clientIp(c), 10, 60 * 60_000);
 		if (retry) return tooMany(c, retry);
 		const body = await readJson(c);
+		if (!signupAllowed(config, body.signupCode))
+			return err(c, 403, 'signup_disabled', 'Signup requires a valid invitation code');
 		let kdf = DEFAULT_KDF;
 		const k = body.kdf as Partial<Kdf> | undefined;
 		if (k && typeof k === 'object') {
@@ -212,8 +252,24 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 	});
 
 	app.delete('/v1/account', auth, (c) => {
-		store.deleteAccount(c.get('device').accountId);
+		const accountId = c.get('device').accountId;
+		store.deleteAccount(accountId);
+		accountGone(accountId);
 		return c.body(null, 204);
+	});
+
+	registerAuthRoutes(app, {
+		config,
+		store,
+		keys,
+		limiter,
+		auth,
+		clientIp,
+		readJson,
+		err,
+		tooMany,
+		deviceName,
+		onAccountChanged: accountGone
 	});
 
 	// ---- pairing ---------------------------------------------------------------
@@ -274,6 +330,7 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		const me = c.get('device');
 		const res = store.removeDevice(me.accountId, c.req.param('id'));
 		if (res === 'not-found') return err(c, 404, 'not_found', 'Device not found');
+		if (res === 'account-deleted') accountGone(me.accountId);
 		return c.json({ ok: true, accountDeleted: res === 'account-deleted' });
 	});
 
@@ -396,11 +453,28 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		err(c, 405, 'method_not_allowed', 'Only GET and HEAD are allowed')
 	);
 
+	// ---- catalog, sources, play urls ----------------------------------------------
+
+	if (catalog)
+		registerCatalogRoutes(app, {
+			config,
+			catalog,
+			limiter,
+			auth,
+			clientIp,
+			publicBase,
+			readJson,
+			err,
+			tooMany,
+			authFailLimit: AUTH_FAIL_LIMIT,
+			authFailWindow: AUTH_FAIL_WINDOW
+		});
+
 	// ---- errors ----------------------------------------------------------------
 
 	app.notFound((c) => err(c, 404, 'not_found', 'Not found'));
 	app.onError((e, c) => {
-		console.error('[error]', c.req.method, redactPath(c.req.path), (e as Error).message);
+		console.error('[error]', c.req.method, redactPath(c.req.path), redactText((e as Error).message));
 		return err(c, 500, 'internal', 'Internal server error');
 	});
 
@@ -409,10 +483,14 @@ export function createApp(config: Config, store = new Store(config.dbPath)): App
 		store,
 		events,
 		limiter,
-		dispose() {
+		keys,
+		sources,
+		catalog,
+		async dispose() {
 			clearInterval(purgeTimer);
 			events.closeAll();
 			limiter.dispose();
+			await catalog?.dispose();
 			store.close();
 		}
 	};

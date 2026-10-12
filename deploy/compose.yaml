@@ -18,6 +18,7 @@ services:
       PORT: 8787
       DATA_DIR: /data
       PUBLIC_URL: https://backend.prismastream.patrickudo.nl
+      VERIFY_URL: https://prismastream.patrickudo.nl/activate
       CORS_ORIGINS: https://prismastream.patrickudo.nl
       TRUST_PROXY: "true"
       ALLOW_SIGNUP: "false"
