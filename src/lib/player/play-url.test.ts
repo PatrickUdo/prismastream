@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	errorNeedsApp,
-	isMixedContent,
-	mobileOs,
-	needsApp,
-	playUrlFor,
-	vlcUrl
-} from './play-url.ts';
+import { httpOnHttps, isMixedContent, mobileOs, playUrlFor, vlcUrl } from './play-url.ts';
 import { streamCandidates } from './source.ts';
 
 const WEB = { native: false, pageProtocol: 'https:' };
@@ -27,18 +20,11 @@ describe('play urls (no server in the video path)', () => {
 		expect(isMixedContent(UPSTREAM, { native: false, pageProtocol: 'http:' })).toBe(false);
 	});
 
-	it('needsApp uses the upstreamHttp hint even without a url (cached detail)', () => {
-		expect(needsApp({ url: '', upstreamHttp: true }, WEB)).toBe(true);
-		expect(needsApp({ url: UPSTREAM }, WEB)).toBe(true);
-		expect(needsApp({ url: UPSTREAM, upstreamHttp: true }, NATIVE)).toBe(false);
-		expect(needsApp(undefined, WEB)).toBe(false);
-	});
-
-	it('treats CORS/network errors as "use the app" on the web only', () => {
-		expect(errorNeedsApp('network', WEB)).toBe(true);
-		expect(errorNeedsApp('unsupported', WEB)).toBe(true);
-		expect(errorNeedsApp('media', WEB)).toBe(false);
-		expect(errorNeedsApp('network', NATIVE)).toBe(false);
+	it('httpOnHttps uses the upstreamHttp hint even without a url (cached detail)', () => {
+		expect(httpOnHttps({ url: '', upstreamHttp: true }, WEB)).toBe(true);
+		expect(httpOnHttps({ url: UPSTREAM }, WEB)).toBe(true);
+		expect(httpOnHttps({ url: UPSTREAM, upstreamHttp: true }, NATIVE)).toBe(false);
+		expect(httpOnHttps(undefined, WEB)).toBe(false);
 	});
 
 	it('offers VLC only on phones', () => {

@@ -3,9 +3,9 @@
 //
 // - Native (Capacitor iOS/Android/Android TV): play the url directly (with the native CORS
 //   fallback loader for HLS).
-// - Web: a plain-http stream on an https page is mixed content and cannot play; CORS or
-//   network errors from hls.js usually mean the same. Then the player and the detail page show
-//   "Deze stream speel je af in de PrismaStream-app" (see AppFallback.svelte).
+// - Web: the player always tries first. A plain-http stream on an https page is mixed content;
+//   Chromium plays it once the user allows insecure content. After a real failure,
+//   web-playback.ts decides which help to show (AppFallback.svelte).
 //
 // Stream urls may contain the provider credentials: never persist or log them.
 import { Capacitor } from '@capacitor/core';
@@ -37,18 +37,16 @@ export function isMixedContent(url: string, env: PlayEnv = currentPlayEnv()): bo
 /** A variant as the backend sends it: `upstreamHttp` tells (also without the url) it is http. */
 export type PlayableVariant = Pick<StreamVariant, 'url'> & { upstreamHttp?: boolean };
 
-/** True when the browser cannot play this variant at all (web only, https page, http stream). */
-export function needsApp(v: PlayableVariant | undefined, env: PlayEnv = currentPlayEnv()): boolean {
-	if (!v || env.native || env.pageProtocol !== 'https:') return false;
-	return v.upstreamHttp === true || isMixedContent(v.url, env);
-}
-
-/** A player error that, on the web, most likely means "use the app" (CORS, network, format). */
-export function errorNeedsApp(
-	kind: 'network' | 'media' | 'unsupported' | 'unknown' | undefined,
+/**
+ * An http stream on an https page in the browser. It may still play (Chromium with "insecure
+ * content" allowed); the player tries first and only then explains (see web-playback.ts).
+ */
+export function httpOnHttps(
+	v: PlayableVariant | undefined,
 	env: PlayEnv = currentPlayEnv()
 ): boolean {
-	return !env.native && (kind === 'network' || kind === 'unsupported');
+	if (!v || env.native || env.pageProtocol !== 'https:') return false;
+	return v.upstreamHttp === true || isMixedContent(v.url, env);
 }
 
 export type MobileOs = 'ios' | 'android' | null;

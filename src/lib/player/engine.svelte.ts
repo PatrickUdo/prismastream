@@ -25,6 +25,17 @@ import { createNativeFallbackLoader, hostMemo, type LoaderCtor } from './native-
 
 export type EngineErrorKind = 'network' | 'media' | 'unsupported' | 'unknown';
 
+export interface EngineError {
+	kind: EngineErrorKind;
+	detail: string;
+	/** A manifest (HLS) or media metadata loaded before it failed: the source was reachable. */
+	manifestLoaded: boolean;
+	/** HTTP status of the failing request when known (0 = blocked: mixed content, CORS, offline). */
+	status?: number;
+	/** How the last attempt played: hls.js (XHR, needs CORS) or <video src> (no CORS needed). */
+	mode?: 'hls' | 'progressive';
+}
+
 export interface QualityLevel {
 	/** hls.js level index. */
 	index: number;
@@ -128,7 +139,9 @@ export class PlayerEngine {
 	subtitleTrack = $state(-1);
 
 	pip = $state(false);
-	error = $state<{ kind: EngineErrorKind; detail: string } | null>(null);
+	error = $state<EngineError | null>(null);
+	/** A manifest or media metadata arrived for this load (the server answered the browser). */
+	#manifestLoaded = false;
 	/** Playback could not start without a user gesture (autoplay policy). */
 	needsGesture = $state(false);
 
@@ -225,6 +238,7 @@ export class PlayerEngine {
 		on(video, 'progress', () => this.#updateBuffered());
 		on(video, 'durationchange', () => this.#updateDuration());
 		on(video, 'loadedmetadata', () => {
+			this.#manifestLoaded = true;
 			this.#updateDuration();
 			if (this.#mode !== 'hls') this.#onNativeMetadata();
 		});
@@ -301,6 +315,8 @@ export class PlayerEngine {
 	}
 
 	#resetState() {
+		this.#manifestLoaded = false;
+		this.#lastStatus = undefined;
 		this.loading = true;
 		this.buffering = false;
 		this.ended = false;
@@ -401,6 +417,9 @@ export class PlayerEngine {
 		this.qualitySelectable = true;
 		const alive = () => gen === this.#gen && this.#hls === hls;
 
+		hls.on(Events.MANIFEST_LOADED, () => {
+			this.#manifestLoaded = true;
+		});
 		hls.on(Events.MANIFEST_PARSED, (_e, data) => {
 			if (!alive()) return;
 			this.levels = data.levels
@@ -502,6 +521,7 @@ export class PlayerEngine {
 	}
 
 	#fail(kind: EngineErrorKind, detail: string) {
+		const mode = this.#mode === 'none' ? undefined : this.#mode === 'hls' ? 'hls' : 'progressive';
 		this.#gen++;
 		this.#clearStall();
 		clearTimeout(this.#retryTimer);
@@ -509,13 +529,23 @@ export class PlayerEngine {
 		this.loading = false;
 		this.buffering = false;
 		this.paused = true;
-		this.error = { kind, detail };
+		this.error = {
+			kind,
+			detail,
+			manifestLoaded: this.#manifestLoaded,
+			status: this.#lastStatus,
+			mode
+		};
 	}
 
 	// ---- error handling ---------------------------------------------------
 
+	#lastStatus: number | undefined;
+
 	#onHlsError(hls: Hls, data: ErrorData) {
 		if (!data.fatal) return;
+		const code = (data.response as { code?: number } | undefined)?.code;
+		if (typeof code === 'number') this.#lastStatus = code;
 		const manifestFailure =
 			data.details === ErrorDetails.MANIFEST_LOAD_ERROR ||
 			data.details === ErrorDetails.MANIFEST_LOAD_TIMEOUT ||

@@ -7,7 +7,8 @@
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { library } from '#lib/catalog/library.svelte.ts';
 	import { resource } from '#lib/catalog/resource.svelte.ts';
-	import { errorNeedsApp, needsApp } from '#lib/player/play-url.ts';
+	import { currentPlayEnv } from '#lib/player/play-url.ts';
+	import { diagnoseWebFailure, type WebBlock } from '#lib/player/web-playback.ts';
 	import AppFallback from '#lib/player/AppFallback.svelte';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
@@ -222,7 +223,6 @@
 		const tl = title;
 		const ep = episode;
 		const v = current;
-		if (needsApp(v)) return; // the browser cannot load it: AppFallback below
 		untrack(() => start(tl, ep, v));
 	});
 
@@ -324,20 +324,35 @@
 
 	/** An engine error the viewer chose to retry (the player is shown again). */
 	let dismissedError = $state.raw<typeof engine.error>(null);
-	/** 'mixed' = http stream on an https page; 'error' = CORS/network error in the browser. */
-	const appOnly = $derived.by<'mixed' | 'error' | null>(() => {
-		if (status !== 'ready' || !current) return null;
-		if (needsApp(current)) return 'mixed';
+	let webBlock = $state<WebBlock | null>(null);
+	// The player always tries first. After a real failure, find out (with a direct probe of the
+	// stream, never via our server) whether the browser blocked it and which help fits.
+	$effect(() => {
 		const err = engine.error;
-		if (err && err !== dismissedError && library.mode === 'remote' && errorNeedsApp(err.kind))
-			return 'error';
-		return null;
+		const url = current?.url;
+		if (!err || err === dismissedError || !url) {
+			webBlock = null;
+			return;
+		}
+		let cancelled = false;
+		void diagnoseWebFailure(url, err, currentPlayEnv()).then((b) => {
+			if (!cancelled) webBlock = b;
+		});
+		return () => {
+			cancelled = true;
+		};
 	});
+	const appOnly = $derived(
+		status === 'ready' && engine.error && engine.error !== dismissedError ? webBlock : null
+	);
 
 	// ---- presentation ----------------------------------------------------------
 
 	/** Title in the profile language ("Het Laatste Licht" for a Dutch profile). */
 	const name = $derived(title ? displayTitle(title) : '');
+	const appTitle = $derived(
+		episode ? `${name} ${t('player.episodeCode', { s: episode.season, e: episode.episode })}` : name
+	);
 
 	const episodeCode = $derived(
 		episode ? t('player.episodeCode', { s: episode.season, e: episode.episode }) : ''
@@ -399,10 +414,11 @@
 
 {#if appOnly}
 	<AppFallback
+		block={appOnly}
 		url={current?.url}
-		reason={appOnly}
+		title={appTitle}
 		onBack={back}
-		onRetry={appOnly === 'error' ? () => (dismissedError = engine.error) : undefined}
+		onRetry={() => (dismissedError = engine.error)}
 	/>
 {:else if status === 'ready' && title}
 	<Player

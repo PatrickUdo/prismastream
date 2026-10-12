@@ -2,6 +2,23 @@
 // storage. Owned by Agent M.
 export default {
 	nl: {
+		'player.web.allow.title': 'Sta onveilige inhoud toe voor PrismaStream',
+		'player.web.allow.why':
+			'Je provider levert deze stream via http. De video gaat rechtstreeks van je provider naar je browser; daarvoor moet je browser http-inhoud op deze site toestaan.',
+		'player.web.allow.step1': 'Klik op het pictogram links van het adres (instellingen of slot).',
+		'player.web.allow.step2': 'Kies Site-instellingen.',
+		'player.web.allow.step3': 'Zet Onveilige inhoud op Toestaan.',
+		'player.web.allow.step4': 'Kom terug naar dit tabblad en klik Opnieuw proberen.',
+		'player.web.allow.app':
+			'Liever niet? De apps voor iPhone, Android en Apple TV spelen het zonder instellingen af.',
+		'player.web.other.body':
+			'Je provider levert deze stream via http, en deze browser speelt dat op een beveiligde pagina niet af. Gebruik de app, of open de stream in VLC.',
+		'player.web.cors.title': 'Je provider staat afspelen in de browser niet toe',
+		'player.web.cors.body':
+			'Gebruik de PrismaStream-app of VLC. De stream gaat dan rechtstreeks van je provider naar je apparaat.',
+		'player.web.copy': 'Kopieer streamlink',
+		'player.web.copied': 'Gekopieerd',
+		'player.web.m3u': 'Open in VLC (.m3u)',
 		'common.details': 'Details',
 		'cloud.error.timeout': 'PrismaStream Cloud reageert niet op tijd. Probeer het zo opnieuw.',
 		'cloud.error.internal': 'Er ging iets mis op dit apparaat. Probeer het opnieuw.',
@@ -16,9 +33,10 @@ export default {
 		'player.app.android': 'App voor Android',
 		'player.app.appletv': 'App voor Apple TV',
 		'player.app.vlc': 'Open in VLC',
-		'player.app.detailAll': 'Deze titel speel je af in de PrismaStream-app (de streams zijn http).',
+		'player.app.detailAll':
+			'Deze streams komen via http. In Chrome, Edge of Brave sta je eenmalig onveilige inhoud toe; anders gebruik je de app.',
 		'player.app.detailSome':
-			'Sommige versies speel je alleen in de PrismaStream-app af (http-streams).',
+			'Sommige versies komen via http: je browser vraagt daarvoor mogelijk eenmalig toestemming.',
 		'welcome.eyebrow': 'PrismaStream',
 		'welcome.title': 'Al je tv op één plek',
 		'welcome.lead':
@@ -249,6 +267,23 @@ export default {
 		'sync.error.needPassword': 'Voer je wachtwoord in.'
 	},
 	en: {
+		'player.web.allow.title': 'Allow insecure content for PrismaStream',
+		'player.web.allow.why':
+			'Your provider delivers this stream over http. The video goes straight from your provider to your browser; your browser has to allow http content on this site for that.',
+		'player.web.allow.step1': 'Click the icon left of the address (settings or lock).',
+		'player.web.allow.step2': 'Choose Site settings.',
+		'player.web.allow.step3': 'Set Insecure content to Allow.',
+		'player.web.allow.step4': 'Come back to this tab and click Try again.',
+		'player.web.allow.app':
+			'Rather not? The apps for iPhone, Android and Apple TV play it without settings.',
+		'player.web.other.body':
+			'Your provider delivers this stream over http, and this browser does not play that on a secure page. Use the app, or open the stream in VLC.',
+		'player.web.cors.title': 'Your provider does not allow playback in the browser',
+		'player.web.cors.body':
+			'Use the PrismaStream app or VLC. The stream then goes straight from your provider to your device.',
+		'player.web.copy': 'Copy stream link',
+		'player.web.copied': 'Copied',
+		'player.web.m3u': 'Open in VLC (.m3u)',
 		'common.details': 'Details',
 		'cloud.error.timeout': 'PrismaStream Cloud does not respond in time. Try again shortly.',
 		'cloud.error.internal': 'Something went wrong on this device. Try again.',
@@ -263,8 +298,9 @@ export default {
 		'player.app.android': 'App for Android',
 		'player.app.appletv': 'App for Apple TV',
 		'player.app.vlc': 'Open in VLC',
-		'player.app.detailAll': 'Play this title in the PrismaStream app (the streams are http).',
-		'player.app.detailSome': 'Some versions only play in the PrismaStream app (http streams).',
+		'player.app.detailAll':
+			'These streams use http. In Chrome, Edge or Brave you allow insecure content once; otherwise use the app.',
+		'player.app.detailSome': 'Some versions use http: your browser may ask for permission once.',
 		'welcome.eyebrow': 'PrismaStream',
 		'welcome.title': 'All your TV in one place',
 		'welcome.lead':

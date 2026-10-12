@@ -6,7 +6,8 @@
 	import type { Channel, LangCode, StreamVariant } from '#lib/types.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { library } from '#lib/catalog/library.svelte.ts';
-	import { errorNeedsApp, needsApp } from '#lib/player/play-url.ts';
+	import { currentPlayEnv } from '#lib/player/play-url.ts';
+	import { diagnoseWebFailure, type WebBlock } from '#lib/player/web-playback.ts';
 	import AppFallback from '#lib/player/AppFallback.svelte';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
@@ -125,7 +126,6 @@
 		if (status !== 'ready' || !channel || !current) return;
 		const ch = channel;
 		const v = current;
-		if (needsApp(v)) return; // the browser cannot load it: AppFallback below
 		untrack(() => start(ch, v));
 	});
 
@@ -181,15 +181,29 @@
 
 	// ---- web: streams the browser cannot play -----------------------------------
 
+	const appTitle = $derived(channel?.name ?? 'PrismaStream');
 	let dismissedError = $state.raw<typeof engine.error>(null);
-	const appOnly = $derived.by<'mixed' | 'error' | null>(() => {
-		if (status !== 'ready' || !current) return null;
-		if (needsApp(current)) return 'mixed';
+	let webBlock = $state<WebBlock | null>(null);
+	// The player always tries first. After a real failure, find out (with a direct probe of the
+	// stream, never via our server) whether the browser blocked it and which help fits.
+	$effect(() => {
 		const err = engine.error;
-		if (err && err !== dismissedError && library.mode === 'remote' && errorNeedsApp(err.kind))
-			return 'error';
-		return null;
+		const url = current?.url;
+		if (!err || err === dismissedError || !url) {
+			webBlock = null;
+			return;
+		}
+		let cancelled = false;
+		void diagnoseWebFailure(url, err, currentPlayEnv()).then((b) => {
+			if (!cancelled) webBlock = b;
+		});
+		return () => {
+			cancelled = true;
+		};
 	});
+	const appOnly = $derived(
+		status === 'ready' && engine.error && engine.error !== dismissedError ? webBlock : null
+	);
 
 	// ---- presentation ------------------------------------------------------------
 
@@ -279,10 +293,11 @@
 
 {#if appOnly}
 	<AppFallback
+		block={appOnly}
 		url={current?.url}
-		reason={appOnly}
+		title={appTitle}
 		onBack={() => leave('/live')}
-		onRetry={appOnly === 'error' ? () => (dismissedError = engine.error) : undefined}
+		onRetry={() => (dismissedError = engine.error)}
 	/>
 {:else if status === 'ready' && channel}
 	<Player

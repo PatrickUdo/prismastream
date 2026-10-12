@@ -39,7 +39,7 @@
 	} from '#lib/components/format.ts';
 	import { displayTitle, secondaryTitles } from '#lib/components/titles.ts';
 	import { bestSubtitle } from '#lib/merge/pick.ts';
-	import { needsApp } from '#lib/player/play-url.ts';
+	import { httpOnHttps } from '#lib/player/play-url.ts';
 	import { playAction, profilePrefs } from '#lib/components/play.ts';
 	import {
 		allVariants,
@@ -119,7 +119,7 @@
 	);
 	const versionCount = $derived(variants.length);
 	/** Web: versions the browser cannot play (http streams on an https page). */
-	const appOnlyVariants = $derived(variants.filter((v) => needsApp(v)).length);
+	const appOnlyVariants = $derived(variants.filter((v) => httpOnHttps(v)).length);
 	const sourceCount = $derived(new Set(variants.map((v) => v.sourceId)).size);
 
 	// ---- Play ----------------------------------------------------------------
