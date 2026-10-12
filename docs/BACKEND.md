@@ -170,3 +170,4 @@ Aanvullingen en precisering van het contract door de server (alles additief, ten
     - de EPG gaat streamend naar SQLite; per zender en starttijd wordt één programma bewaard;
     - `CATALOG_BUILD_MEMORY_MB` is standaard 256;
     - gemeten met 300.000 items + 840.000 EPG-programma's: zie `server/README.md`.
+16. **Robuuste bron-data:** `meta.errorCode` kan ook `invalid_response` zijn ("De bron gaf ongeldige gegevens terug"); de foutmelding is nooit de ruwe parserfout. Eén kapot item in een providerlijst of cacheregel wordt overgeslagen en geteld: het komt in `lastWarning` van de bron, alleen met aantal en positie, nooit met inhoud. Alleen een echt kapotte structuur (geen JSON, of een afgebroken lijst) laat die lijst mislukken.

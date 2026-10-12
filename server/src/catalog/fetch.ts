@@ -13,6 +13,7 @@ import { Readable, Transform } from 'node:stream';
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib';
 import { BlockedAddressError, createSafeLookup, hostAllowed } from '../ssrf.ts';
 import { HttpError, redactText, redactUrl } from './core.ts';
+import { JsonListError, JsonListSplitter } from './jsonlist.ts';
 
 export type SourceErrorCode =
 	| 'unreachable'
@@ -304,83 +305,36 @@ export async function fetchJson<T = unknown>(url: string, opts: FetchOptions): P
 
 /**
  * Streams a (large) JSON list and calls `onItem` per element, without holding the whole text
- * or the whole parsed tree in memory. The root may be an array (`[{…},{…}]`) or an object whose
- * values are the items (`{"1":{…},"2":{…}}`, some panels do that). Only object/array items are
- * reported. A non-JSON body throws invalid_response; `{"user_info":…}`-style error objects
- * simply yield their object values (callers validate items).
+ * or the whole parsed tree in memory (see JsonListSplitter). Root: an array, or an object whose
+ * values are the items. A non-JSON or cut-off body throws invalid_response; single elements
+ * that do not parse are skipped and counted.
  */
 export async function streamJsonList(
 	url: string,
 	opts: FetchOptions,
 	onItem: (item: unknown) => void
-): Promise<number> {
+): Promise<{ count: number; skipped: number }> {
 	const up = await openUpstream(url, opts);
-	let buf = '';
-	let pos = 0;
-	let depth = 0;
-	let inStr = false;
-	let esc = false;
-	let started = false;
-	let itemStart = -1;
-	let count = 0;
-	let head = '';
-	for await (const chunk of textChunks(up.body, opts.secrets)) {
-		buf += chunk;
-		if (!started && head.length < 200) head += chunk;
-		for (; pos < buf.length; pos++) {
-			const c = buf.charCodeAt(pos);
-			if (inStr) {
-				if (esc) esc = false;
-				else if (c === 92) esc = true;
-				else if (c === 34) inStr = false;
-				continue;
-			}
-			if (!started) {
-				if (c === 0xfeff || c === 32 || c === 9 || c === 10 || c === 13) continue;
-				if (c === 91 || c === 123) {
-					started = true;
-					depth = 1;
-					continue;
-				}
-				up.body.destroy();
-				throw jsonError(head, opts, url);
-			}
-			if (c === 34) {
-				inStr = true;
-				continue;
-			}
-			if (c === 123 || c === 91) {
-				if (depth === 1) itemStart = pos;
-				depth++;
-			} else if (c === 125 || c === 93) {
-				depth--;
-				if (depth === 1 && itemStart >= 0) {
-					const text = buf.slice(itemStart, pos + 1);
-					itemStart = -1;
-					try {
-						onItem(JSON.parse(text));
-						count++;
-					} catch {
-						// a malformed element: skip it
-					}
-				} else if (depth === 0) {
-					up.body.destroy();
-					return count;
-				}
-			}
+	const splitter = new JsonListSplitter(onItem);
+	try {
+		for await (const chunk of up.body) {
+			splitter.push(chunk as Buffer);
+			if (splitter.done) break;
 		}
-		// Keep only the unfinished item.
-		if (itemStart >= 0) {
-			buf = buf.slice(itemStart);
-			pos -= itemStart;
-			itemStart = 0;
-		} else {
-			buf = '';
-			pos = 0;
+		return splitter.end();
+	} catch (err) {
+		if (err instanceof JsonListError) {
+			up.body.destroy();
+			if (err.head) throw jsonError(err.head, opts, url);
+			throw new SourceError(
+				'invalid_response',
+				`De bron gaf ongeldige gegevens terug (onvolledige lijst): ${redactUrl(url, opts.secrets)}`
+			);
 		}
+		throw toSourceError(err, opts.secrets);
+	} finally {
+		if (!up.body.destroyed) up.body.destroy();
 	}
-	if (!started) throw jsonError(head, opts, url);
-	return count;
 }
 
 /** Body bytes, gunzipped when they start with the gzip magic (e.g. .xml.gz without encoding). */

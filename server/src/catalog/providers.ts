@@ -161,6 +161,8 @@ export async function loadXtream(
 			}),
 			action
 		);
+		if (res?.skipped)
+			warnings.push(`${action}: ${res.skipped} ongeldige item(s) overgeslagen`);
 		return { n, ok: res !== undefined };
 	};
 	onStep?.('movies', 0.1);

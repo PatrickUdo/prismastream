@@ -67,7 +67,8 @@ import {
 	sourceDir,
 	writeMeta,
 	type CatalogMetaFile,
-	type ItemKind
+	type ItemKind,
+	type ReadStats
 } from './rawcache.ts';
 import { secretList, type ResolvedSource } from './sources.ts';
 import { hasTmdbData, sqliteTmdbCache, sqliteTmdbIndex } from './tmdb.ts';
@@ -653,7 +654,8 @@ async function partition(
 	kind: 'm' | 's',
 	demo: RawCatalog[],
 	opts: Parameters<typeof analyzeRaw>[1],
-	batchItems: number
+	batchItems: number,
+	stats?: ReadStats
 ): Promise<{ batchOf: Uint16Array; batches: number; count: number }> {
 	let parent = new Int32Array(1 << 16);
 	let n = 0;
@@ -689,7 +691,8 @@ async function partition(
 		for (const k of a.keys) if (k) link(`k|${k}`, i);
 		for (const k of a.weakKeys) if (k) link(`k|${k}`, i);
 	};
-	for (const r of ready) for await (const it of readItems<RawMovie | RawSeries>(r.dir, [kind])) add(it);
+	for (const r of ready)
+		for await (const it of readItems<RawMovie | RawSeries>(r.dir, [kind], stats)) add(it);
 	for (const d of demo) for (const it of kind === 'm' ? d.movies : d.series) add(it);
 	first.clear();
 
@@ -777,6 +780,9 @@ export async function runBuild(
 		const tmdb = job.tmdb || hasTmdbData(db) ? sqliteTmdbIndex(db) : undefined;
 		const opts = { sourceNames: names, preferLang: job.preferLang, tmdb, now };
 
+		// Cache lines that do not parse are skipped (counted once, in the partition pass).
+		const unreadable: ReadStats = { skipped: 0, lines: [] };
+
 		// Movies, then series: in batches of independent title groups (see partition()).
 		for (const [kind, phase, ratio] of [
 			['m', 'movies', 0.55],
@@ -788,7 +794,8 @@ export async function runBuild(
 				kind,
 				demo,
 				opts,
-				job.batchItems ?? BATCH_ITEMS
+				job.batchItems ?? BATCH_ITEMS,
+				unreadable
 			);
 			for (let b = 0; b < batches; b++) {
 				let raws = await rawsOf<RawMovie | RawSeries>(ready, kind, demo, (i) => batchOf[i] === b);
@@ -822,6 +829,12 @@ export async function runBuild(
 			channels.forEach((c, pos) => w.channel(c, pos));
 			w.flush();
 		}
+
+		if (unreadable.skipped)
+			emit({
+				type: 'warn',
+				message: `${unreadable.skipped} onleesbare item(s) overgeslagen (regels ${unreadable.lines.join(', ')})`
+			});
 
 		// Flip to the new generation in one small transaction.
 		emit({ type: 'progress', phase: 'write', ratio: 0.95 });
@@ -864,10 +877,30 @@ export async function runBuild(
 		} catch {
 			// best effort
 		}
-		throw err;
+		throw friendlyError(err);
 	} finally {
 		if (!dbIn) db.close();
 	}
+}
+
+/**
+ * Build errors as shown in meta.error: no raw parser/zlib messages (they can contain data
+ * fragments), but a clear text with an error code.
+ */
+export function friendlyError(err: unknown): Error {
+	const e = err as { name?: string; code?: string; message?: string };
+	const msg = String(e?.message ?? err);
+	const code = String(e?.code ?? '');
+	if (err instanceof SyntaxError || /JSON/i.test(msg))
+		return Object.assign(new Error('De bron gaf ongeldige gegevens terug'), {
+			code: 'invalid_response'
+		});
+	if (code.startsWith('Z_') || /unexpected end of file|incorrect header check/i.test(msg))
+		return Object.assign(
+			new Error('De opgeslagen gegevens van een bron zijn beschadigd; vernieuw de bron'),
+			{ code: 'invalid_response' }
+		);
+	return err instanceof Error ? err : new Error(msg);
 }
 
 /** TMDB lookups for the most popular stored titles; the next build uses what it finds. */

@@ -25,6 +25,8 @@ export interface MockOptions {
 	epgHours?: number;
 	/** Every 50th VOD item appears twice (another category), like real panels. */
 	duplicates?: boolean;
+	/** Awkward VOD names (U+2028, U+2029, lone \r, quotes, braces, emoji) and one broken item. */
+	tricky?: boolean;
 }
 
 // A realistic plot length (real panels send 200-600 characters).
@@ -129,7 +131,9 @@ export async function startMockIptv(opts: MockOptions = {}): Promise<MockIptv> {
 						const l = lang(i);
 						return JSON.stringify({
 							num: i + 1,
-							name: `${l} - Mock Film ${film} (${2000 + (film % 24)})`,
+							name:
+								`${l} - Mock Film ${film} (${2000 + (film % 24)})` +
+								(opts.tricky && i % 3 === 0 ? ' \u2028\u2029\r"}] 🎬 مسلسل' : ''),
 							stream_type: 'movie',
 							stream_id: 1000 + i,
 							stream_icon: `http://img.example/poster/${film}.jpg`,
@@ -160,6 +164,7 @@ export async function startMockIptv(opts: MockOptions = {}): Promise<MockIptv> {
 						res,
 						(function* () {
 							yield '[';
+							if (opts.tricky) yield '{"num":0,"name":"kapot", bad},';
 							for (let i = 0; i < nMovies; i++) {
 								yield (i ? ',' : '') + item(i, (i % LANGS.length) + 1);
 								if (opts.duplicates && i % 50 === 0) yield ',' + item(i, 98);

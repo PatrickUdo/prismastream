@@ -30,7 +30,7 @@ export interface QueueOptions {
 	timeoutMs?: number;
 }
 
-type Msg = BuildEvent | { type: 'done' } | { type: 'error'; message: string };
+type Msg = BuildEvent | { type: 'done' } | { type: 'error'; message: string; code?: string };
 
 export class BuildQueue {
 	#hooks: QueueHooks;
@@ -165,6 +165,7 @@ export class BuildQueue {
 				if (m.type === 'done') return;
 				if (m.type === 'error') {
 					failed = m.message;
+					if (m.code) failedCode = m.code;
 					return;
 				}
 				this.#event(accountId, m);

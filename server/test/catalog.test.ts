@@ -576,6 +576,48 @@ describe('robust, memory-lean builds', () => {
 		assert.equal(small.variants, one.variants);
 	});
 
+	it('awkward Xtream data: U+2028/U+2029/\\r in names and one broken item', async () => {
+		const odd = await startMockIptv({ movies: 60, series: 4, channels: 4, tricky: true, rich: false });
+		try {
+			ctx = setup({ proxyAllowPrivate: true, demoSource: false });
+			const a = await newAccount(ctx.call);
+			await ctx.call('/v1/sources', {
+				method: 'POST',
+				token: a.token,
+				json: { type: 'xtream', serverUrl: odd.url, username: USER, password: PASS }
+			});
+			await ctx.catalog!.queue.idle();
+			const meta = await get('/v1/catalog/meta', a.token);
+			assert.equal(meta.status, 'ready', JSON.stringify(meta));
+			assert.ok(meta.counts.movies >= 30);
+			const src = ((await get('/v1/sources', a.token)) as unknown as Json[])[0];
+			assert.equal(src.stats.movies, 60, 'the broken item is skipped, the rest is kept');
+			assert.match(src.lastWarning, /1 ongeldige item/);
+			assert.ok(!src.lastWarning.includes('kapot'), 'no item content in warnings');
+			// A rebuild from the cache (with those characters in it) works too.
+			ctx.catalog!.refresh(a.accountId);
+			await ctx.catalog!.queue.idle();
+			assert.equal((await get('/v1/catalog/meta', a.token)).status, 'ready');
+			const s = await get('/v1/catalog/search?q=mock%20film%203', a.token);
+			assert.ok(s.movies.length > 0);
+		} finally {
+			await odd.close();
+		}
+	});
+
+	it('build errors in meta are readable text with a code', async () => {
+		const { friendlyError } = await import('../src/catalog/build.ts');
+		const e = friendlyError(new SyntaxError('Unterminated string in JSON at position 588')) as Error & {
+			code: string;
+		};
+		assert.equal(e.message, 'De bron gaf ongeldige gegevens terug');
+		assert.equal(e.code, 'invalid_response');
+		const z = friendlyError(Object.assign(new Error('unexpected end of file'), { code: 'Z_BUF_ERROR' })) as Error & {
+			code: string;
+		};
+		assert.equal(z.code, 'invalid_response');
+	});
+
 	it('realistic Xtream data: duplicates, empty categories and one huge category', async () => {
 		const dup = await startMockIptv({ movies: 400, series: 20, channels: 10, duplicates: true, rich: false });
 		try {
