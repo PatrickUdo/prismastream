@@ -41,13 +41,27 @@ export class BackendError extends Error {
 	}
 }
 
-/** The device is offline or the backend cannot be reached (DNS, TLS, CORS, timeout). */
+/**
+ * A request did not get an answer: `unreachable` = fetch itself failed with a network error
+ * (offline, DNS, TLS, CORS); `timeout` = no answer in time. Only `unreachable` means "offline".
+ */
 export class BackendOfflineError extends Error {
-	readonly reason: 'offline' | 'unreachable' | 'timeout';
-	constructor(reason: 'offline' | 'unreachable' | 'timeout' = 'unreachable') {
+	readonly reason: 'unreachable' | 'timeout';
+	/** Technical detail for the "Details" block (no tokens, no query strings). */
+	readonly detail: string;
+	constructor(reason: 'unreachable' | 'timeout' = 'unreachable', detail = '') {
 		super(`Backend ${reason}`);
 		this.name = 'BackendOfflineError';
 		this.reason = reason;
+		this.detail = detail;
+	}
+}
+
+/** Something on this device failed before a request could be made (storage, token, ...). */
+export class BackendInternalError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'BackendInternalError';
 	}
 }
 
@@ -91,7 +105,6 @@ export interface BackendClientOptions {
 	timeoutMs?: number;
 	/** Sleep used between retries (tests pass a fake). */
 	sleep?: (ms: number) => Promise<void>;
-	isOnline?: () => boolean;
 	/** Called when reachability changes (true = the server answered). */
 	onReachability?: (reachable: boolean) => void;
 	/** Called on a 401 (the device token was revoked). */
@@ -185,7 +198,20 @@ export class BackendClient {
 		if (!base) throw new BackendNotConfiguredError();
 		const method = o.method ?? 'GET';
 		const auth = o.auth ?? true;
-		const token = auth ? await this.#o.getToken() : null;
+		let token: string | null = null;
+		if (auth) {
+			// The token comes from the sync vault; never let a stuck storage hang the request.
+			try {
+				token = await Promise.race([
+					Promise.resolve(this.#o.getToken()),
+					new Promise<never>((_, reject) =>
+						setTimeout(() => reject(new Error('token lookup timed out')), 8000)
+					)
+				]);
+			} catch (err) {
+				throw new BackendInternalError(`Token unavailable: ${(err as Error)?.message ?? err}`);
+			}
+		}
 		if (auth && !token) throw new BackendNotConfiguredError();
 		const url = base + path + buildQuery(o.query);
 		const retries = o.retries ?? (method === 'GET' ? 2 : 0);
@@ -196,13 +222,9 @@ export class BackendClient {
 		let attempt = 0;
 		let useConditional = conditional && !this.#conditionalBroken;
 		for (;;) {
+			// No navigator.onLine shortcut: browsers report it wrongly (VPNs, virtual adapters);
+			// only a failing fetch counts as offline.
 			if (o.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-			const online =
-				this.#o.isOnline?.() ?? (typeof navigator === 'undefined' || navigator.onLine !== false);
-			if (!online) {
-				this.#setReachable(false);
-				throw new BackendOfflineError('offline');
-			}
 			const cached = useConditional ? this.#etags.get(url) : undefined;
 			const headers: Record<string, string> = { accept: 'application/json' };
 			if (token) headers.authorization = `Bearer ${token}`;
@@ -243,7 +265,13 @@ export class BackendClient {
 					o.signal?.removeEventListener('abort', onAbort);
 					continue;
 				}
-				failure = new BackendOfflineError(timedOut ? 'timeout' : 'unreachable');
+				const where = `${method} ${path}`;
+				failure = timedOut
+					? new BackendOfflineError('timeout', `${where}: no answer within the timeout`)
+					: new BackendOfflineError(
+							'unreachable',
+							`${where}: ${(err as Error)?.name ?? 'Error'}: ${(err as Error)?.message ?? err}`
+						);
 			} finally {
 				clearTimeout(timer);
 				o.signal?.removeEventListener('abort', onAbort);
@@ -255,8 +283,8 @@ export class BackendClient {
 					attempt++;
 					continue;
 				}
-				this.#setReachable(false);
-				throw failure ?? new BackendOfflineError('unreachable');
+				if (!failure || failure.reason === 'unreachable') this.#setReachable(false);
+				throw failure ?? new BackendOfflineError('unreachable', `${method} ${path}`);
 			}
 
 			this.#setReachable(true);

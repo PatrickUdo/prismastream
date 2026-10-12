@@ -119,7 +119,10 @@ export class LocalProvider implements CatalogProvider {
 		return out;
 	}
 
-	async title(id: string, opts: { similar?: boolean } = {}): Promise<TitleDetail | null> {
+	async title(
+		id: string,
+		opts: { similar?: boolean; fresh?: boolean } = {}
+	): Promise<TitleDetail | null> {
 		await loaded();
 		let t = catalog.getTitle(id);
 		if (!t) return null;

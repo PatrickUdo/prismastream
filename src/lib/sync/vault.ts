@@ -3,23 +3,62 @@
 // the token lives in IndexedDB, never in localStorage).
 import { Capacitor } from '@capacitor/core';
 import { KeychainAccess, SecureStorage } from '@aparajita/capacitor-secure-storage';
-import { createStore, del, get, set, clear, type UseStore } from 'idb-keyval';
+import { del, get, set, clear, type UseStore } from 'idb-keyval';
+import { safeStore } from '#lib/idb.ts';
 
 let store: UseStore | null = null;
-const kv = () => (store ??= createStore('prismastream-sync', 'kv'));
+const kv = () => (store ??= safeStore('prismastream-sync', 'kv'));
+
+/**
+ * When IndexedDB cannot be used (blocked by another tab, private mode quirks), the vault keeps
+ * working in memory for this session instead of failing the login or the sync.
+ */
+const memory = new Map<string, unknown>();
+let degraded = false;
+
+async function guarded<T>(idb: () => Promise<T>, fallback: () => T): Promise<T> {
+	if (degraded) return fallback();
+	try {
+		return await idb();
+	} catch (err) {
+		if ((err as Error)?.name !== 'IdbUnavailableError') throw err;
+		degraded = true;
+		console.warn('[sync] storage unavailable, keeping the session in memory');
+		return fallback();
+	}
+}
 
 export const vault = {
+	/** IndexedDB is unavailable: state only lives in memory until the app restarts. */
+	get degraded() {
+		return degraded;
+	},
 	get<T>(key: string): Promise<T | undefined> {
-		return get<T>(key, kv());
+		return guarded(
+			() => get<T>(key, kv()),
+			() => memory.get(key) as T | undefined
+		);
 	},
 	set(key: string, value: unknown): Promise<void> {
-		return set(key, value, kv());
+		memory.set(key, value);
+		return guarded(
+			() => set(key, value, kv()),
+			() => undefined
+		);
 	},
 	del(key: string): Promise<void> {
-		return del(key, kv());
+		memory.delete(key);
+		return guarded(
+			() => del(key, kv()),
+			() => undefined
+		);
 	},
 	clear(): Promise<void> {
-		return clear(kv());
+		memory.clear();
+		return guarded(
+			() => clear(kv()),
+			() => undefined
+		);
 	}
 };
 

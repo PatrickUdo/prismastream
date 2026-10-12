@@ -1,49 +1,59 @@
 import { describe, expect, it } from 'vitest';
-import type { StreamVariant } from '#lib/types.ts';
-import { isPlayUrl, playUrlFor, playableVariant } from './play-url.ts';
+import {
+	errorNeedsApp,
+	isMixedContent,
+	mobileOs,
+	needsApp,
+	playUrlFor,
+	vlcUrl
+} from './play-url.ts';
 import { streamCandidates } from './source.ts';
 
-const PLAY = 'https://backend.test/v1/play/ppx_abc/src~123';
+const WEB = { native: false, pageProtocol: 'https:' };
+const NATIVE = { native: true, pageProtocol: 'https:' };
+const UPSTREAM = 'http://iptv.example:8080/live/user/pass/123.m3u8';
 
-describe('playUrlFor', () => {
-	it('adds via=proxy for backend play urls on the web', () => {
-		expect(isPlayUrl(PLAY)).toBe(true);
-		expect(playUrlFor(PLAY, { native: false })).toBe(`${PLAY}?via=proxy`);
-		expect(playUrlFor(`${PLAY}?x=1`, { native: false })).toBe(`${PLAY}?x=1&via=proxy`);
-		expect(playUrlFor(`${PLAY}?via=proxy`, { native: false })).toBe(`${PLAY}?via=proxy`);
+describe('play urls (no server in the video path)', () => {
+	it('uses the stream url as is, never a proxy', () => {
+		expect(playUrlFor(UPSTREAM)).toBe(UPSTREAM);
+		expect(playUrlFor('https://cdn.example/a.m3u8')).toBe('https://cdn.example/a.m3u8');
+		expect(playUrlFor(UPSTREAM)).not.toContain('via=');
 	});
 
-	it('leaves native, https-known and non-play urls alone', () => {
-		expect(playUrlFor(PLAY, { native: true })).toBe(PLAY);
-		expect(playUrlFor(PLAY, { native: false, upstreamSecure: true })).toBe(PLAY);
-		const demo = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-		expect(playUrlFor(demo, { native: false })).toBe(demo);
+	it('flags http streams on an https page in the browser only', () => {
+		expect(isMixedContent(UPSTREAM, WEB)).toBe(true);
+		expect(isMixedContent('https://cdn.example/a.m3u8', WEB)).toBe(false);
+		expect(isMixedContent(UPSTREAM, NATIVE)).toBe(false);
+		expect(isMixedContent(UPSTREAM, { native: false, pageProtocol: 'http:' })).toBe(false);
 	});
 
-	it('maps altUrls too', () => {
-		const v: StreamVariant = {
-			id: 'a',
-			sourceId: 's',
-			url: PLAY,
-			altUrls: [PLAY + '.ts'],
-			audioLangs: [],
-			subtitleLangs: [],
-			quality: 'HD',
-			label: ''
-		};
-		const out = playableVariant(v, { native: false });
-		expect(out.url).toContain('via=proxy');
-		expect(out.altUrls?.[0]).toBe(`${PLAY}.ts?via=proxy`);
-		expect(playableVariant(v, { native: true })).toBe(v);
+	it('needsApp uses the upstreamHttp hint even without a url (cached detail)', () => {
+		expect(needsApp({ url: '', upstreamHttp: true }, WEB)).toBe(true);
+		expect(needsApp({ url: UPSTREAM }, WEB)).toBe(true);
+		expect(needsApp({ url: UPSTREAM, upstreamHttp: true }, NATIVE)).toBe(false);
+		expect(needsApp(undefined, WEB)).toBe(false);
+	});
+
+	it('treats CORS/network errors as "use the app" on the web only', () => {
+		expect(errorNeedsApp('network', WEB)).toBe(true);
+		expect(errorNeedsApp('unsupported', WEB)).toBe(true);
+		expect(errorNeedsApp('media', WEB)).toBe(false);
+		expect(errorNeedsApp('network', NATIVE)).toBe(false);
+	});
+
+	it('offers VLC only on phones', () => {
+		expect(mobileOs('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)')).toBe('ios');
+		expect(mobileOs('Mozilla/5.0 (Linux; Android 15)')).toBe('android');
+		expect(mobileOs('Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0)')).toBeNull();
+		expect(vlcUrl(UPSTREAM, 'ios')).toBe(`vlc://${UPSTREAM}`);
+		expect(vlcUrl(UPSTREAM, null)).toBeNull();
 	});
 });
 
-describe('streamCandidates for play urls', () => {
-	it('never rewrites the play path and tries altUrls last', () => {
-		const c = streamCandidates(PLAY, 'ts', [PLAY + '-ts']);
-		expect(c[0]).toEqual({ url: PLAY, kind: 'hls' });
-		expect(c[1].url).toBe(PLAY + '-ts');
-		expect(c.every((x) => !x.url.endsWith('.m3u8'))).toBe(true);
-		expect(streamCandidates(PLAY, 'mp4')[0].kind).toBe('progressive');
+describe('streamCandidates', () => {
+	it('tries the .m3u8 twin of a .ts live url, then the original', () => {
+		const c = streamCandidates('http://iptv.example/live/u/p/1.ts', 'ts');
+		expect(c[0]).toEqual({ url: 'http://iptv.example/live/u/p/1.m3u8', kind: 'hls' });
+		expect(c[1].url).toBe('http://iptv.example/live/u/p/1.ts');
 	});
 });

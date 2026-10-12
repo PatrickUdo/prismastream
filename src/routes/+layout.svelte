@@ -2,7 +2,8 @@
 	import '../app.css';
 	import favicon from '#lib/assets/favicon.svg';
 	import type { LayoutProps } from './$types';
-	import { afterNavigate, beforeNavigate, onNavigate } from '$app/navigation';
+	import { afterNavigate, beforeNavigate, goto, onNavigate } from '$app/navigation';
+	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import { prefersReducedMotion } from 'svelte/motion';
 	import { user } from '#lib/stores/user.svelte.ts';
@@ -11,12 +12,42 @@
 	import { luminance } from '#lib/components/art.ts';
 	import { initTvNavigation, tvAfterNavigate, tvBeforeNavigate } from '#lib/tv/focus.svelte.ts';
 	import ExitToast from '#lib/tv/ExitToast.svelte';
+	import { REQUIRE_LOGIN, isPublicPath, session } from '#lib/session.svelte.ts';
+	import { syncEngine } from '#lib/sync/index.ts';
+	import { path } from '#lib/components/links.ts';
 
 	let { children }: LayoutProps = $props();
 
 	// User data, sync and the catalog in the right mode (local or remote, see library).
 	$effect(() => {
 		void library.init();
+	});
+
+	// ---- Login gate (production) ------------------------------------------------------
+	const publicRoute = $derived(isPublicPath(page.url.pathname));
+	/** Render the route: no gate, a public route, or a logged-in account. */
+	const allowed = $derived(
+		!REQUIRE_LOGIN || publicRoute || (library.initialized && session.loggedIn)
+	);
+
+	// A rejected token ends the session (the account is forgotten here; profiles stay).
+	$effect(() => {
+		if (REQUIRE_LOGIN && syncEngine.configured && syncEngine.error === 'unauthorized')
+			untrack(() => void session.expire());
+	});
+
+	// Not logged in: everything except the public routes goes to the welcome screen, with the
+	// original url to come back to after logging in.
+	$effect(() => {
+		if (!REQUIRE_LOGIN || !library.initialized || publicRoute || session.loggedIn) return;
+		const next = page.url.pathname + page.url.search;
+		untrack(() => {
+			const parts: string[] = [];
+			if (next !== '/') parts.push(`next=${encodeURIComponent(next)}`);
+			if (session.notice) parts.push(`reason=${session.notice}`);
+			const qs = parts.join('&');
+			void goto(path(`/welcome${qs ? `?${qs}` : ''}`), { replaceState: true }).catch(() => {});
+		});
 	});
 
 	// Back online or back in the app: check the backend again (remote mode).
@@ -92,6 +123,17 @@
 	<title>PrismaStream</title>
 </svelte:head>
 
-{@render children()}
+{#if allowed}
+	{@render children()}
+{:else}
+	<div class="boot" aria-busy="true"></div>
+{/if}
 
 <ExitToast />
+
+<style>
+	.boot {
+		min-height: 100svh;
+		background: var(--bg);
+	}
+</style>

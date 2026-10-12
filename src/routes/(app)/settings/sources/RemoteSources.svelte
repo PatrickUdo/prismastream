@@ -20,6 +20,7 @@
 	import Button from '#lib/components/Button.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import Modal from '#lib/components/Modal.svelte';
+	import ErrorDetails from '#lib/components/ErrorDetails.svelte';
 
 	interface FormState {
 		id?: string;
@@ -422,6 +423,7 @@
 		<p class="notice warn glass" role="alert">
 			<Icon name="alert" size="1.1rem" /> <span>{msg(loadError)}</span>
 		</p>
+		<ErrorDetails text={loadError.detail} />
 	{/if}
 
 	{#if list === null && !loadError}
@@ -612,6 +614,7 @@
 
 			{#if formError}
 				<p class="bad" role="alert"><Icon name="alert" size="1rem" /> {msg(formError)}</p>
+				<ErrorDetails text={formError.detail} />
 			{/if}
 			{#if test}
 				{#if test.ok}

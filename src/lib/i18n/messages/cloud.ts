@@ -2,6 +2,33 @@
 // storage. Owned by Agent M.
 export default {
 	nl: {
+		'common.details': 'Details',
+		'cloud.error.timeout': 'PrismaStream Cloud reageert niet op tijd. Probeer het zo opnieuw.',
+		'cloud.error.internal': 'Er ging iets mis op dit apparaat. Probeer het opnieuw.',
+		'cloud.error.storage':
+			'De opslag van deze browser reageert niet. Sluit andere PrismaStream-tabbladen en probeer het opnieuw.',
+		'player.app.title': 'Deze stream speel je af in de PrismaStream-app',
+		'player.app.bodyMixed':
+			'Je IPTV-provider levert deze stream via http. Browsers spelen dat op een beveiligde pagina niet af. In de app voor iPhone, iPad, Android of Apple TV werkt hij wel, rechtstreeks bij je provider.',
+		'player.app.bodyError':
+			'Deze stream laat zich niet in de browser afspelen (de provider blokkeert het of de verbinding mislukt). In de app voor iPhone, iPad, Android of Apple TV speelt hij rechtstreeks bij je provider.',
+		'player.app.ios': 'App voor iPhone en iPad',
+		'player.app.android': 'App voor Android',
+		'player.app.appletv': 'App voor Apple TV',
+		'player.app.vlc': 'Open in VLC',
+		'player.app.detailAll': 'Deze titel speel je af in de PrismaStream-app (de streams zijn http).',
+		'player.app.detailSome':
+			'Sommige versies speel je alleen in de PrismaStream-app af (http-streams).',
+		'welcome.eyebrow': 'PrismaStream',
+		'welcome.title': 'Al je tv op één plek',
+		'welcome.lead':
+			'Films, series en live tv van al je IPTV-bronnen, samengevoegd en in jouw taal. Log in om te beginnen.',
+		'welcome.point.merge': 'Eén titel per film of serie, in elke taal en kwaliteit',
+		'welcome.point.devices': 'Verder kijken op je telefoon, tablet, computer en tv',
+		'welcome.point.private': 'Je profielen en voortgang zijn end-to-end versleuteld',
+		'welcome.expired': 'Je sessie is verlopen of dit apparaat is afgemeld. Log opnieuw in.',
+		'welcome.loggedOut': 'Je bent uitgelogd.',
+		'welcome.finishing': 'Je gegevens worden opgehaald…',
 		'cloud.name': 'PrismaStream Cloud',
 		'cloud.login': 'Inloggen',
 
@@ -206,12 +233,14 @@ export default {
 		'account.activate.approve': 'Goedkeuren',
 		'account.activate.busy': 'Goedkeuren…',
 		'account.activate.done': '{name} is gekoppeld.',
-		'account.activate.loginFirst': 'Log eerst in op dit apparaat om een tv te koppelen.',
+		'account.activate.loginFirst':
+			'Log eerst in met je PrismaStream-account. Daarna keur je de tv goed.',
+		'account.activate.toApp': 'Naar PrismaStream',
 		'account.activate.legacy':
 			'Tv koppelen kan met een account met e-mail en wachtwoord. Log uit en log in met je e-mailadres.',
 
-		'sync.error.invalidSignupCode': 'Deze uitnodigingscode is ongeldig.',
-		'sync.error.invalidLogin': 'E-mailadres of wachtwoord onjuist.',
+		'sync.error.invalidSignupCode': 'Uitnodigingscode ongeldig of al gebruikt.',
+		'sync.error.invalidLogin': 'E-mail of wachtwoord onjuist.',
 		'sync.error.emailTaken': 'Er bestaat al een account met dit e-mailadres. Log in.',
 		'sync.error.invalidEmail': 'Vul een geldig e-mailadres in.',
 		'sync.error.wrongPassword': 'Dit wachtwoord klopt niet.',
@@ -220,6 +249,32 @@ export default {
 		'sync.error.needPassword': 'Voer je wachtwoord in.'
 	},
 	en: {
+		'common.details': 'Details',
+		'cloud.error.timeout': 'PrismaStream Cloud does not respond in time. Try again shortly.',
+		'cloud.error.internal': 'Something went wrong on this device. Try again.',
+		'cloud.error.storage':
+			'The storage of this browser does not respond. Close other PrismaStream tabs and try again.',
+		'player.app.title': 'Play this stream in the PrismaStream app',
+		'player.app.bodyMixed':
+			'Your IPTV provider delivers this stream over http. Browsers do not play that on a secure page. The app for iPhone, iPad, Android or Apple TV plays it, straight from your provider.',
+		'player.app.bodyError':
+			'This stream cannot play in the browser (the provider blocks it or the connection fails). The app for iPhone, iPad, Android or Apple TV plays it straight from your provider.',
+		'player.app.ios': 'App for iPhone and iPad',
+		'player.app.android': 'App for Android',
+		'player.app.appletv': 'App for Apple TV',
+		'player.app.vlc': 'Open in VLC',
+		'player.app.detailAll': 'Play this title in the PrismaStream app (the streams are http).',
+		'player.app.detailSome': 'Some versions only play in the PrismaStream app (http streams).',
+		'welcome.eyebrow': 'PrismaStream',
+		'welcome.title': 'All your TV in one place',
+		'welcome.lead':
+			'Movies, series and live TV from all your IPTV sources, merged and in your language. Log in to get started.',
+		'welcome.point.merge': 'One title per movie or series, in every language and quality',
+		'welcome.point.devices': 'Keep watching on your phone, tablet, computer and TV',
+		'welcome.point.private': 'Your profiles and progress are end-to-end encrypted',
+		'welcome.expired': 'Your session expired or this device was signed out. Log in again.',
+		'welcome.loggedOut': 'You are logged out.',
+		'welcome.finishing': 'Fetching your data…',
 		'cloud.name': 'PrismaStream Cloud',
 		'cloud.login': 'Log in',
 
@@ -419,12 +474,14 @@ export default {
 		'account.activate.approve': 'Approve',
 		'account.activate.busy': 'Approving…',
 		'account.activate.done': '{name} is linked.',
-		'account.activate.loginFirst': 'Log in on this device first to link a TV.',
+		'account.activate.loginFirst':
+			'Log in with your PrismaStream account first. Then approve the TV.',
+		'account.activate.toApp': 'Go to PrismaStream',
 		'account.activate.legacy':
 			'Linking a TV needs an account with e-mail and password. Log out and log in with your e-mail address.',
 
-		'sync.error.invalidSignupCode': 'This invitation code is not valid.',
-		'sync.error.invalidLogin': 'Wrong e-mail address or password.',
+		'sync.error.invalidSignupCode': 'Invitation code invalid or already used.',
+		'sync.error.invalidLogin': 'Wrong e-mail or password.',
 		'sync.error.emailTaken': 'An account with this e-mail address exists. Log in.',
 		'sync.error.invalidEmail': 'Enter a valid e-mail address.',
 		'sync.error.wrongPassword': 'This password is not correct.',

@@ -19,6 +19,7 @@
 	import EmptyState from './EmptyState.svelte';
 	import Button from './Button.svelte';
 	import CloudBanner from './CloudBanner.svelte';
+	import ErrorDetails from './ErrorDetails.svelte';
 	import { libraryHref } from './links.ts';
 	import { profilePrefs } from './play.ts';
 
@@ -67,10 +68,12 @@
 	let firstLoading = $state(true);
 	let loadingMore = $state(false);
 	let failed = $state<unknown>(null);
+	let retries = $state(0);
 	let pageCtrl: AbortController | null = null;
 
 	$effect(() => {
 		const key = queryKey;
+		void retries;
 		if (key === null) return;
 		const ctrl = new AbortController();
 		pageCtrl?.abort();
@@ -209,7 +212,8 @@
 	{#if !loading && failed}
 		<EmptyState icon="alert" tone="error" title={t('common.error')} body={t(errorText(failed))}>
 			{#snippet actions()}
-				<Button variant="glass" icon="refresh" onclick={() => library.poke()}>
+				<ErrorDetails error={failed} />
+				<Button variant="glass" icon="refresh" onclick={() => (library.poke(), retries++)}>
 					{t('common.retry')}
 				</Button>
 			{/snippet}

@@ -288,7 +288,9 @@ export function createNativeFallbackLoader(Base: LoaderCtor, deps: NativeLoaderD
 				try {
 					fn();
 				} catch (err) {
-					console.warn('[player] hls.js callback failed', err instanceof Error ? err.message : err);
+					// Never log stream urls (they can carry the provider credentials).
+					const msg = err instanceof Error ? err.message : String(err);
+					console.warn('[player] hls.js callback failed', msg.replace(/[a-z]+:\/\/\S+/gi, '<url>'));
 				}
 			};
 			deps

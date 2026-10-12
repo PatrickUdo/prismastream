@@ -7,7 +7,8 @@
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { library } from '#lib/catalog/library.svelte.ts';
 	import { resource } from '#lib/catalog/resource.svelte.ts';
-	import { playableVariant } from '#lib/player/play-url.ts';
+	import { errorNeedsApp, needsApp } from '#lib/player/play-url.ts';
+	import AppFallback from '#lib/player/AppFallback.svelte';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import { displayTitle } from '#lib/components/titles.ts';
@@ -58,7 +59,8 @@
 	// The full title (variants with play urls, seasons) from the provider of this mode.
 	const detail = resource(
 		() => (library.initialized && titleId ? `${library.mode}|${titleId}` : null),
-		(_k, signal) => library.provider.title(titleId, { similar: false }, signal)
+		// Always fresh: stream urls are never cached on the device.
+		(_k, signal) => library.provider.title(titleId, { similar: false, fresh: true }, signal)
 	);
 	const baseTitle = $derived<Title | undefined>(
 		detail.key?.endsWith(`|${titleId}`) ? (detail.value ?? undefined) : undefined
@@ -219,7 +221,8 @@
 		if (status !== 'ready' || !title || !current) return;
 		const tl = title;
 		const ep = episode;
-		const v = playableVariant(current);
+		const v = current;
+		if (needsApp(v)) return; // the browser cannot load it: AppFallback below
 		untrack(() => start(tl, ep, v));
 	});
 
@@ -317,6 +320,20 @@
 		leave(blocked ? '/' : `/title/${encodeURIComponent(titleId)}`);
 	}
 
+	// ---- web: streams the browser cannot play -----------------------------------
+
+	/** An engine error the viewer chose to retry (the player is shown again). */
+	let dismissedError = $state.raw<typeof engine.error>(null);
+	/** 'mixed' = http stream on an https page; 'error' = CORS/network error in the browser. */
+	const appOnly = $derived.by<'mixed' | 'error' | null>(() => {
+		if (status !== 'ready' || !current) return null;
+		if (needsApp(current)) return 'mixed';
+		const err = engine.error;
+		if (err && err !== dismissedError && library.mode === 'remote' && errorNeedsApp(err.kind))
+			return 'error';
+		return null;
+	});
+
 	// ---- presentation ----------------------------------------------------------
 
 	/** Title in the profile language ("Het Laatste Licht" for a Dutch profile). */
@@ -380,7 +397,14 @@
 	{/if}
 {/snippet}
 
-{#if status === 'ready' && title}
+{#if appOnly}
+	<AppFallback
+		url={current?.url}
+		reason={appOnly}
+		onBack={back}
+		onRetry={appOnly === 'error' ? () => (dismissedError = engine.error) : undefined}
+	/>
+{:else if status === 'ready' && title}
 	<Player
 		{engine}
 		heading={name}

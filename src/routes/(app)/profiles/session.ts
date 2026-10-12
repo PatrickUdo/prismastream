@@ -19,6 +19,15 @@ export function markProfileChosen() {
 	}
 }
 
+/** Ask "Who's watching?" again (after logging in). */
+export function resetProfileChosen() {
+	try {
+		sessionStorage.removeItem(CHOSEN_KEY);
+	} catch {
+		// ignore
+	}
+}
+
 /** Profiles whose PIN was entered in this session to edit them. */
 const editUnlocked = new Set<string>();
 

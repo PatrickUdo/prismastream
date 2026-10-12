@@ -1,3 +1,5 @@
+import { safeStore } from '#lib/idb.ts';
+
 // Small LRU cache with an item and a byte budget, optionally persisted (IndexedDB in the app,
 // an in-memory storage in tests). Used in remote mode for TitleCards and title details, so the
 // device keeps at most a few hundred items (±5 MB) instead of whole catalogs.
@@ -234,9 +236,8 @@ export function memoryLruStorage<V>(): LruStorage<V> & { records: Map<string, Lr
 /** LruStorage on an idb-keyval store (one database per cache). */
 export function idbLruStorage<V>(dbName: string): LruStorage<V> {
 	type Idb = typeof import('idb-keyval');
-	let p: Promise<{ m: Idb; s: ReturnType<Idb['createStore']> }> | null = null;
-	const open = () =>
-		(p ??= import('idb-keyval').then((m) => ({ m, s: m.createStore(dbName, 'lru') })));
+	let p: Promise<{ m: Idb; s: import('idb-keyval').UseStore }> | null = null;
+	const open = () => (p ??= import('idb-keyval').then((m) => ({ m, s: safeStore(dbName, 'lru') })));
 	const available = () => typeof indexedDB !== 'undefined';
 	return {
 		async load() {

@@ -92,12 +92,15 @@ Eigendom: `src/lib/merge/`, `src/lib/sample/`, `src/lib/tmdb/`, `src/lib/stores/
 - ✅ Keuze gebruiker: de server haalt bronnen op (inloggegevens versleuteld op de server), persoonlijke data blijft E2E; contract in docs/BACKEND.md
 - ✅ Code op GitHub (PatrickUdo/prismastream)
 - ✅ Agent L: server-side bronnen, catalogus-build en cache (SQLite en gzip), catalog-API, play-redirects, signup met uitnodigingscode, Docker
-- 🔄 Agent M: web-client remote-modus (kleine LRU-cache, paginering), onboarding, bronnen via de server, opslagbeheer, Android-fout en E2E-robuustheid
+- ✅ Agent M: web-client remote-modus (kleine LRU-cache, paginering), onboarding, bronnen via de server, opslagbeheer, Android-fout en E2E-robuustheid
 - ✅ Deploy-bestanden: deploy/web.Dockerfile (nginx-SPA, lokaal getest), deploy/compose.yaml, deploy/deploy.sh
 - ✅ DNS-records in Cloudflare, proxy hosts met Let's Encrypt en Force SSL in Nginx Proxy Manager
 - ✅ Backend live op https://backend.prismastream.patrickudo.nl (4ea0a55; 39 MB RAM in rust)
-- ⬜ Web-app met remote-modus deployen (na Agent M) en end-to-end-test op https://prismastream.patrickudo.nl
-- 🔄 Eenvoudige sync: één account met e-mail en wachtwoord (zero-knowledge), tv koppelen met een code en goedkeuring op de telefoon (L: server, M: client)
-- 🔄 Geen demobibliotheek online (DEMO_SOURCE=false op de server, VITE_DEMO=false in de productiebuild)
+- ✅ Web-app met remote-modus live (e0ec1fd), geen demo online
+- 🔄 Verplicht inloggen: welkomstscherm (/welcome) en login-gate in productie, ook in de native apps (Agent M)
+- 🔄 Eenmalige uitnodigingscodes en een admin-CLI in de container (Agent L)
+- ⬜ End-to-end-test op productie na de login-gate
+- ✅ Eenvoudige sync: één account met e-mail en wachtwoord (zero-knowledge), tv koppelen met een code en goedkeuring op de telefoon (L: server, M: client)
+- ✅ Geen demobibliotheek online (DEMO_SOURCE=false op de server, VITE_DEMO=false in de productiebuild)
 - ⬜ tvOS-app naar remote-modus en tv-login met code (Agent N)
 - ⬜ Eindcontrole: code-review, regressie op horizontale scroll, build, iOS- en Android-sync

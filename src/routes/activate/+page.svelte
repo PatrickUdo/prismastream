@@ -13,6 +13,9 @@
 	import { path } from '#lib/components/links.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import KidsLock from '#lib/components/KidsLock.svelte';
+	import AuthShell from '#lib/components/account/AuthShell.svelte';
+	import AccountForm from '#lib/components/account/AccountForm.svelte';
+	import { library } from '#lib/catalog/library.svelte.ts';
 
 	$effect(() => {
 		void initSync();
@@ -85,100 +88,114 @@
 {#if kids.restricted}
 	<KidsLock />
 {:else}
-	<div class="page activate">
-		<header class="head">
-			<p class="eyebrow">{t('account.eyebrow')}</p>
-			<h1>{t('account.activate.title')}</h1>
-			<p class="lead">{t('account.activate.lead')}</p>
-		</header>
+	<AuthShell>
+		<div class="activate">
+			<header class="head">
+				<p class="eyebrow">{t('account.eyebrow')}</p>
+				<h1>{t('account.activate.title')}</h1>
+				<p class="lead">{t('account.activate.lead')}</p>
+			</header>
 
-		{#if done}
-			<p class="notice" role="status"><Icon name="check" size="1.1rem" /> {done}</p>
-		{/if}
-		{#if error}
-			<p class="error" role="alert"><Icon name="alert" size="1.1rem" /> {error}</p>
-		{/if}
+			{#if done}
+				<p class="notice" role="status"><Icon name="check" size="1.1rem" /> {done}</p>
+			{/if}
+			{#if error}
+				<p class="error" role="alert"><Icon name="alert" size="1.1rem" /> {error}</p>
+			{/if}
 
-		{#if !syncEngine.configured}
-			<section class="panel glass">
-				<p>{t('account.activate.loginFirst')}</p>
-				<div class="actions">
-					<Button variant="primary" icon="user" href={path('/settings/sync')} data-focusable>
-						{t('cloud.login')}
-					</Button>
-				</div>
-			</section>
-		{:else if !ready}
-			<section class="panel glass">
-				<p>{t('account.activate.legacy')}</p>
-			</section>
-		{:else if device}
-			<section class="panel glass">
-				<h2>{t('account.activate.confirmTitle')}</h2>
-				<p class="device">
-					<Icon name="monitor" size="1.3rem" /> <strong>{device.deviceName}</strong>
-				</p>
-				<p class="muted">{t('account.activate.confirmBody')}</p>
-				<form class="form" onsubmit={approve}>
-					{#if !syncEngine.hasMasterKey}
-						<PasswordField
-							id="act-pass"
-							label={t('account.password')}
-							bind:value={password}
-							autocomplete="current-password"
-							hint={t('account.activate.passwordHint')}
-						/>
-					{/if}
-					<div class="actions">
-						<Button
-							variant="primary"
-							type="submit"
-							icon="check"
-							disabled={busy || (!syncEngine.hasMasterKey && !password)}
-							data-focusable
-						>
-							{busy ? t('account.activate.busy') : t('account.activate.approve')}
-						</Button>
-						<Button variant="ghost" onclick={() => (device = null)} data-focusable>
-							{t('common.cancel')}
-						</Button>
-					</div>
-				</form>
-			</section>
-		{:else}
-			<section class="panel glass">
-				<form class="form" onsubmit={find}>
-					<div class="field">
-						<label for="act-code">{t('account.activate.code')}</label>
-						<input
-							id="act-code"
-							class="code"
-							type="text"
-							autocomplete="one-time-code"
-							autocapitalize="characters"
-							spellcheck="false"
-							maxlength="9"
-							placeholder="ABCD-1234"
-							bind:value={code}
-							data-focusable
-						/>
-					</div>
-					<div class="actions">
-						<Button variant="primary" type="submit" disabled={busy || !code.trim()} data-focusable>
-							{busy ? t('common.loading') : t('account.activate.next')}
-						</Button>
-					</div>
-				</form>
-			</section>
-		{/if}
-	</div>
+			{#if !syncEngine.configured}
+				<section class="panel">
+					<p class="muted">{t('account.activate.loginFirst')}</p>
+					<AccountForm serverUrl={library.backendUrl ?? ''} allowTv={false} />
+				</section>
+			{:else if !ready}
+				<section class="panel">
+					<p>{t('account.activate.legacy')}</p>
+				</section>
+			{:else if device}
+				<section class="panel">
+					<h2>{t('account.activate.confirmTitle')}</h2>
+					<p class="device">
+						<Icon name="monitor" size="1.3rem" /> <strong>{device.deviceName}</strong>
+					</p>
+					<p class="muted">{t('account.activate.confirmBody')}</p>
+					<form class="form" onsubmit={approve}>
+						{#if !syncEngine.hasMasterKey}
+							<PasswordField
+								id="act-pass"
+								label={t('account.password')}
+								bind:value={password}
+								autocomplete="current-password"
+								hint={t('account.activate.passwordHint')}
+							/>
+						{/if}
+						<div class="actions">
+							<Button
+								variant="primary"
+								type="submit"
+								icon="check"
+								disabled={busy || (!syncEngine.hasMasterKey && !password)}
+								data-focusable
+							>
+								{busy ? t('account.activate.busy') : t('account.activate.approve')}
+							</Button>
+							<Button variant="ghost" onclick={() => (device = null)} data-focusable>
+								{t('common.cancel')}
+							</Button>
+						</div>
+					</form>
+				</section>
+			{:else}
+				<section class="panel">
+					<form class="form" onsubmit={find}>
+						<div class="field">
+							<label for="act-code">{t('account.activate.code')}</label>
+							<input
+								id="act-code"
+								class="code"
+								type="text"
+								autocomplete="one-time-code"
+								autocapitalize="characters"
+								spellcheck="false"
+								maxlength="9"
+								placeholder="ABCD-1234"
+								bind:value={code}
+								data-focusable
+							/>
+						</div>
+						<div class="actions">
+							<Button
+								variant="primary"
+								type="submit"
+								disabled={busy || !code.trim()}
+								data-focusable
+							>
+								{busy ? t('common.loading') : t('account.activate.next')}
+							</Button>
+						</div>
+					</form>
+				</section>
+			{/if}
+			{#if syncEngine.configured}
+				<a class="home" href={path('/')} data-focusable>{t('account.activate.toApp')}</a>
+			{/if}
+		</div>
+	</AuthShell>
 {/if}
 
 <style>
 	.activate {
-		max-width: 40rem;
 		display: grid;
 		gap: 1.25rem;
+		min-width: 0;
+	}
+	.home {
+		justify-self: start;
+		color: var(--text-2);
+		font-size: var(--text-s);
+		font-weight: 650;
+		text-decoration: underline;
+		text-underline-offset: 0.2em;
 	}
 	h1 {
 		font-size: var(--text-2xl);
@@ -189,8 +206,6 @@
 		font-size: var(--text-l);
 	}
 	.panel {
-		border-radius: var(--radius-l);
-		padding: clamp(1.1rem, 0.8rem + 1.2vw, 1.75rem);
 		display: grid;
 		gap: 0.9rem;
 		min-width: 0;

@@ -9,6 +9,8 @@ export interface ErrorMessage {
 	params?: Record<string, string | number>;
 	/** Server text, used when no key fits. */
 	fallback?: string;
+	/** Technical reason for the "Details" block. */
+	detail?: string;
 }
 
 const CODE_KEYS: [RegExp, string][] = [
@@ -68,7 +70,12 @@ export function sourceErrorMessage(
 
 /** Message for anything thrown while talking to the backend about sources. */
 export function sourceErrorFromException(err: unknown, locale = 'nl'): ErrorMessage {
-	if (err instanceof BackendOfflineError) return { key: 'cloud.error.offline' };
+	return { ...sourceErrorBase(err, locale), detail: errorDetail(err) };
+}
+
+function sourceErrorBase(err: unknown, locale: string): ErrorMessage {
+	if (err instanceof BackendOfflineError)
+		return { key: err.reason === 'timeout' ? 'cloud.error.timeout' : 'cloud.error.offline' };
 	if (err instanceof BackendError) {
 		const b = err.body ?? {};
 		const expiresAt = typeof b.expiresAt === 'number' ? b.expiresAt : undefined;
@@ -78,7 +85,7 @@ export function sourceErrorFromException(err: unknown, locale = 'nl'): ErrorMess
 		if (err.status === 429) return { key: 'cloud.error.rateLimited' };
 		return sourceErrorMessage(err.code, { message: err.message, status, expiresAt, locale });
 	}
-	return { key: 'cloud.source.error.generic', fallback: (err as Error)?.message };
+	return { key: 'cloud.error.internal', fallback: (err as Error)?.message };
 }
 
 const TEXT_CODES: [RegExp, string][] = [
@@ -107,4 +114,29 @@ export function sourceErrorFromText(text: string): ErrorMessage | null {
 		return m.key === 'cloud.source.error.generic' ? null : m;
 	}
 	return null;
+}
+
+/** Remove anything secret-looking from a technical message (tokens, query strings, auth). */
+export function redactDetail(text: string): string {
+	return text
+		.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer ***')
+		.replace(/\b(pst|ppx|pt|pdc)_[A-Za-z0-9_-]+/g, '$1_***')
+		.replace(/\/v1\/play\/[^/\s]+/g, '/v1/play/***')
+		.replace(/\?[^\s"']*/g, '?***')
+		.replace(/\/\/[^/\s:@]+:[^/\s@]+@/g, '//***:***@')
+		.slice(0, 500);
+}
+
+/** Technical reason of an error for the "Details" block (never contains tokens). */
+export function errorDetail(err: unknown): string {
+	if (!err) return '';
+	if (err instanceof BackendOfflineError)
+		return redactDetail(`${err.name} (${err.reason}) ${err.detail}`);
+	if (err instanceof BackendError) {
+		const b = err.body ?? {};
+		const msg = typeof b.message === 'string' ? b.message : err.message;
+		return redactDetail(`HTTP ${err.status} ${err.code}${msg ? `: ${msg}` : ''}`);
+	}
+	if (err instanceof Error) return redactDetail(`${err.name}: ${err.message}`);
+	return redactDetail(String(err));
 }

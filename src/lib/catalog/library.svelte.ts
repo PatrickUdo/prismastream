@@ -16,9 +16,11 @@ import type { CatalogMeta } from '#lib/backend/types.ts';
 import {
 	BackendClient,
 	BackendError,
+	BackendInternalError,
 	BackendOfflineError,
 	isAbortError
 } from '#lib/backend/client.ts';
+import { errorDetail } from '#lib/backend/errors.ts';
 import { DEFAULT_BACKEND_URL } from '#lib/backend/config.ts';
 import { LruCache, idbLruStorage } from '#lib/backend/lru.ts';
 import { catalog } from '#lib/stores/catalog.svelte.ts';
@@ -31,7 +33,13 @@ import { LocalProvider } from './local.ts';
 import { RemoteProvider, type CacheEntry, type SnapshotStore } from './remote.ts';
 import type { CatalogProvider } from './provider.ts';
 import { LOCAL_MODE_DATABASES, deleteDatabases } from './storage.ts';
-import { sourceName as localSourceName } from '#lib/sources/index.svelte.ts';
+import { IdbUnavailableError, safeStore } from '#lib/idb.ts';
+import { removeSource, sourceName as localSourceName, sources } from '#lib/sources/index.svelte.ts';
+import { Capacitor } from '@capacitor/core';
+import { loadJSON, saveJSON } from '#lib/storage.ts';
+import { secrets } from '#lib/sync/vault.ts';
+import { migrateLocalModeData } from './migrate.ts';
+import { REQUIRE_LOGIN } from '#lib/session.svelte.ts';
 import { SAMPLE_SOURCE_NAMES } from '#lib/sample/meta.ts';
 
 export type LibraryMode = 'local' | 'remote';
@@ -44,14 +52,15 @@ const META_POLL_BUILDING_MS = 5_000;
 const EPG_BLOCK = 6 * 3_600_000;
 const NOWNEXT_TTL = 10 * 60_000;
 const NO_CATALOG_KEY = 'ps:backend:noCatalog';
+const MIGRATION_KEY = 'migration:remote:v1';
 
 function idbSnapshots(): SnapshotStore {
 	type Idb = typeof import('idb-keyval');
-	let p: Promise<{ m: Idb; s: ReturnType<Idb['createStore']> }> | null = null;
+	let p: Promise<{ m: Idb; s: import('idb-keyval').UseStore }> | null = null;
 	const open = () =>
 		(p ??= import('idb-keyval').then((m) => ({
 			m,
-			s: m.createStore('prismastream-remote', 'kv')
+			s: safeStore('prismastream-remote', 'kv')
 		})));
 	const ok = () => typeof indexedDB !== 'undefined';
 	return {
@@ -132,6 +141,8 @@ class Library {
 	// ---- remote state ----------------------------------------------------------------
 	#remoteStatus = $state<LibraryStatus>('loading');
 	#remoteError = $state<string | null>(null);
+	/** Technical reason of the last catalog error (for the "Details" block). */
+	errorDetail = $state<string | null>(null);
 	/** The device cannot reach the backend; cached data is shown. */
 	offline = $state(false);
 	meta = $state.raw<CatalogMeta | null>(null);
@@ -151,7 +162,8 @@ class Library {
 		},
 		onReachability: (ok) => {
 			this.offline = !ok;
-		}
+		},
+		onUnauthorized: () => syncEngine.markUnauthorized()
 	});
 	readonly remote = new RemoteProvider({
 		client: this.client,
@@ -248,21 +260,51 @@ class Library {
 		this.#remoteChannels = [];
 		this.#channelsKey = '';
 		if (this.mode === 'local') {
-			setSourcesSync(true);
 			this.offline = false;
 			this.meta = null;
 			if (previous?.startsWith('remote')) void this.remote.clear();
+			// Production (login gate): there is no local mode, only the welcome screen. Never
+			// fetch local sources from the browser there (CORS, credentials on the device).
+			if (REQUIRE_LOGIN) return;
+			setSourcesSync(true);
 			void catalog.init();
 			return;
 		}
 		// Remote: no local catalog, no synced IPTV credentials, no local-mode caches.
 		setSourcesSync(false);
 		if (catalog.status !== 'idle') catalog.reset();
-		void deleteDatabases(LOCAL_MODE_DATABASES);
+		void this.#migrate();
 		this.#remoteStatus = 'loading';
 		this.#remoteError = null;
 		this.#remoteVersion++;
 		void this.#startRemote();
+	}
+
+	/** One-time cleanup of local-mode data from older versions (see migrate.ts). */
+	async #migrate() {
+		try {
+			const r = await migrateLocalModeData({
+				native: Capacitor.isNativePlatform(),
+				isDone: () => loadJSON<boolean>(MIGRATION_KEY, false),
+				markDone: () => saveJSON(MIGRATION_KEY, true),
+				deleteLocalCaches: () => deleteDatabases(LOCAL_MODE_DATABASES),
+				localSourceIds: async () => {
+					await sources.ready;
+					return sources.list.filter((x) => x.type !== 'sample').map((x) => x.id);
+				},
+				removeSource: (id) => removeSource(id),
+				clearOldSyncKeys: async () => {
+					rememberNoCatalog(null);
+					await secrets.setProxyPrefix(null).catch(() => undefined);
+					if (user.settings.syncToken) await user.updateSettings({ syncToken: undefined });
+				}
+			});
+			if (r.errors.length) console.warn('[library] migration:', r.errors.join('; '));
+		} catch (err) {
+			console.warn('[library] migration failed', (err as Error)?.message ?? err);
+		}
+		// Later runs (e.g. a blocked delete that finishes now) only retry the cache cleanup.
+		void deleteDatabases(LOCAL_MODE_DATABASES);
 	}
 
 	async #startRemote() {
@@ -303,6 +345,7 @@ class Library {
 			if (!this.meta) {
 				this.#remoteStatus = 'error';
 				this.#remoteError = errorText(err);
+				this.errorDetail = errorDetail(err);
 			}
 			next = err instanceof BackendOfflineError ? 30_000 : 60_000;
 		}
@@ -423,6 +466,7 @@ class Library {
 			.catch((err: unknown) => {
 				if (this.#channelsKey !== key) return;
 				this.#channelsError = errorText(err);
+				this.errorDetail = errorDetail(err);
 			})
 			.finally(() => {
 				if (this.#channelsKey === key) this.#channelsLoading = false;
@@ -581,7 +625,10 @@ export function nowNextIn(list: readonly EpgProgramme[], at: number): NowNext {
 
 /** A user-facing message key for a backend failure (see cloud.* messages). */
 export function errorText(err: unknown): string {
-	if (err instanceof BackendOfflineError) return 'cloud.error.offline';
+	if (err instanceof BackendOfflineError)
+		return err.reason === 'timeout' ? 'cloud.error.timeout' : 'cloud.error.offline';
+	if (err instanceof BackendInternalError) return 'cloud.error.internal';
+	if (err instanceof IdbUnavailableError) return 'cloud.error.storage';
 	if (err instanceof BackendError) {
 		if (err.status === 401) return 'cloud.error.unauthorized';
 		if (err.status === 429) return 'cloud.error.rateLimited';

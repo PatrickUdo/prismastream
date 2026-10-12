@@ -11,3 +11,10 @@ export const DEFAULT_BACKEND_URL: string | null = normalizeServerUrl(
 export function appOrigin(): string {
 	return typeof location !== 'undefined' ? location.origin : '';
 }
+
+/** Where to get the apps (placeholders until the store pages exist). */
+export const APP_LINKS = {
+	ios: 'https://prismastream.patrickudo.nl/apps#ios',
+	android: 'https://prismastream.patrickudo.nl/apps#android',
+	appletv: 'https://prismastream.patrickudo.nl/apps#appletv'
+} as const;

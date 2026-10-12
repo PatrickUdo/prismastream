@@ -1,6 +1,7 @@
 // Optional TMDB enrichment. Runs in the background, in batches, only when the user set an API
 // key. It produces a TmdbIndex: tmdb ids for (translated) titles plus metadata. The next
 // buildCatalog() uses it, so "Der Pate", "Le Parrain" and "De Peetvader" end up as one title.
+import { safeStore } from '#lib/idb.ts';
 import type { LangCode, Title } from '#lib/types.ts';
 import { matchKey } from '#lib/merge/normalize.ts';
 import { TmdbClient, type TmdbCache } from './client.ts';
@@ -13,9 +14,9 @@ const INDEX_KEY = 'tmdb:index:v1';
 const META_TTL = 30 * 86_400_000;
 
 type IdbModule = typeof import('idb-keyval');
-let idb: Promise<{ mod: IdbModule; store: ReturnType<IdbModule['createStore']> }> | null = null;
+let idb: Promise<{ mod: IdbModule; store: import('idb-keyval').UseStore }> | null = null;
 function db() {
-	idb ??= import('idb-keyval').then((mod) => ({ mod, store: mod.createStore('ps-tmdb', 'kv') }));
+	idb ??= import('idb-keyval').then((mod) => ({ mod, store: safeStore('ps-tmdb', 'kv') }));
 	return idb;
 }
 

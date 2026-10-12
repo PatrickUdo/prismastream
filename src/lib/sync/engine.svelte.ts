@@ -238,6 +238,14 @@ export class SyncEngine {
 		return this.#ready;
 	}
 
+	/** The backend rejected this device's token (401 from the catalog API): stop syncing. */
+	markUnauthorized() {
+		if (!this.configured || this.error === 'unauthorized') return;
+		this.status = 'error';
+		this.error = 'unauthorized';
+		this.#stopBackground();
+	}
+
 	/**
 	 * Bearer token of this device (the same token authenticates the catalog backend), or null.
 	 * Never log or persist it elsewhere.
@@ -269,16 +277,20 @@ export class SyncEngine {
 	}
 
 	async #activate(cfg: SyncConfig, keys?: SyncKeys | null) {
+		// Token, api and keys first: `configured` (accountId) must never be true while the
+		// token is still missing (a page reacting to it would get "unauthorized").
+		const token = await secrets.getToken();
+		const loadedKeys = keys ?? (await vault.get<SyncKeys>('keys').catch(() => undefined)) ?? null;
 		this.#config = cfg;
+		this.#api = new SyncApi(cfg.serverUrl);
+		this.#token = token;
+		this.#keys = loadedKeys;
 		this.serverUrl = cfg.serverUrl;
 		this.accountId = cfg.accountId;
 		this.deviceId = cfg.deviceId;
 		this.deviceName = cfg.deviceName;
 		this.email = cfg.email ?? null;
 		this.authMode = cfg.auth === 'password' ? 'password' : 'passphrase';
-		this.#api = new SyncApi(cfg.serverUrl);
-		this.#token = await secrets.getToken();
-		this.#keys = keys ?? (await vault.get<SyncKeys>('keys')) ?? null;
 		await this.#loadStates();
 		this.#subscribe();
 		if (!this.#token) {
@@ -338,20 +350,15 @@ export class SyncEngine {
 			this.#wakeUp();
 			void this.syncNow();
 		};
-		const onOffline = () => {
-			if (this.configured && !this.locked) this.status = 'offline';
-		};
 		const onHide = () => void this.#flushPush();
 		window.addEventListener('focus', onVisible);
 		document.addEventListener('visibilitychange', onVisible);
 		window.addEventListener('online', onOnline);
-		window.addEventListener('offline', onOffline);
 		window.addEventListener('pagehide', onHide);
 		this.#unsubs.push(() => {
 			window.removeEventListener('focus', onVisible);
 			document.removeEventListener('visibilitychange', onVisible);
 			window.removeEventListener('online', onOnline);
-			window.removeEventListener('offline', onOffline);
 			window.removeEventListener('pagehide', onHide);
 		});
 	}
@@ -400,8 +407,8 @@ export class SyncEngine {
 		let failures = 0;
 		while (this.#polling) {
 			const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-			const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
-			if (hidden || offline || this.locked || !this.#token || !this.#api) {
+			// navigator.onLine is not trusted (often wrong behind VPNs); failures back off below.
+			if (hidden || this.locked || !this.#token || !this.#api) {
 				await this.#idle(30_000);
 				continue;
 			}

@@ -1,6 +1,7 @@
 // IndexedDB cache for raw catalogs, EPG, lazy series info and local playlist files.
 // Keys: `<sourceId>:<kind>[:<sub>]`. Urls are masked before writing (see mask.ts).
-import { createStore, get, set, del, delMany, keys, type UseStore } from 'idb-keyval';
+import { get, set, del, delMany, keys, type UseStore } from 'idb-keyval';
+import { safeStore } from '#lib/idb.ts';
 
 /** Bump when the cached shape changes; older entries are ignored. */
 export const CACHE_VERSION = 2;
@@ -20,7 +21,7 @@ export interface CacheEntry<T> {
 let db: UseStore | undefined;
 const available = () => typeof indexedDB !== 'undefined';
 function store(): UseStore {
-	db ??= createStore('prismastream-cache', 'cache');
+	db ??= safeStore('prismastream-cache', 'cache');
 	return db;
 }
 

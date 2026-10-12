@@ -6,7 +6,8 @@
 	import type { Channel, LangCode, StreamVariant } from '#lib/types.ts';
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { library } from '#lib/catalog/library.svelte.ts';
-	import { playableVariant } from '#lib/player/play-url.ts';
+	import { errorNeedsApp, needsApp } from '#lib/player/play-url.ts';
+	import AppFallback from '#lib/player/AppFallback.svelte';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import { PlayerEngine } from '#lib/player/engine.svelte.ts';
@@ -123,7 +124,8 @@
 		}
 		if (status !== 'ready' || !channel || !current) return;
 		const ch = channel;
-		const v = playableVariant(current);
+		const v = current;
+		if (needsApp(v)) return; // the browser cannot load it: AppFallback below
 		untrack(() => start(ch, v));
 	});
 
@@ -176,6 +178,18 @@
 	}
 
 	onDestroy(() => clearTimeout(zapTimer));
+
+	// ---- web: streams the browser cannot play -----------------------------------
+
+	let dismissedError = $state.raw<typeof engine.error>(null);
+	const appOnly = $derived.by<'mixed' | 'error' | null>(() => {
+		if (status !== 'ready' || !current) return null;
+		if (needsApp(current)) return 'mixed';
+		const err = engine.error;
+		if (err && err !== dismissedError && library.mode === 'remote' && errorNeedsApp(err.kind))
+			return 'error';
+		return null;
+	});
 
 	// ---- presentation ------------------------------------------------------------
 
@@ -263,7 +277,14 @@
 	{/if}
 {/snippet}
 
-{#if status === 'ready' && channel}
+{#if appOnly}
+	<AppFallback
+		url={current?.url}
+		reason={appOnly}
+		onBack={() => leave('/live')}
+		onRetry={appOnly === 'error' ? () => (dismissedError = engine.error) : undefined}
+	/>
+{:else if status === 'ready' && channel}
 	<Player
 		bind:this={player}
 		{engine}

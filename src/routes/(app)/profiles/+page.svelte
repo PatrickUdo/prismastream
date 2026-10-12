@@ -6,6 +6,7 @@
 <script lang="ts">
 	import type { Profile } from '#lib/types.ts';
 	import { goto } from '$app/navigation';
+	import { safeNext } from '#lib/session.svelte.ts';
 	import { page } from '$app/state';
 	import { t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
@@ -48,7 +49,7 @@
 		await user.selectProfile(p.id);
 		kids.relock();
 		markProfileChosen();
-		await goto(path('/'));
+		await goto(path(safeNext(page.url.searchParams.get('next'))));
 	}
 
 	function pick(p: Profile) {

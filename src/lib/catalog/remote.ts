@@ -14,6 +14,7 @@ import type {
 import { BackendError, BackendOfflineError, type BackendClient } from '#lib/backend/client.ts';
 import type { LruCache } from '#lib/backend/lru.ts';
 import { fold as foldText } from '#lib/search/fold.ts';
+import { withTimeout } from '#lib/idb.ts';
 import type {
 	CatalogProvider,
 	Facets,
@@ -101,6 +102,8 @@ export interface RemoteProviderOptions {
 	cache: LruCache<CacheEntry>;
 	snapshots: SnapshotStore;
 	now?: () => number;
+	/** Give up on the persisted cache after this long (ms). */
+	primeTimeoutMs?: number;
 }
 
 export class RemoteProvider implements CatalogProvider {
@@ -110,17 +113,27 @@ export class RemoteProvider implements CatalogProvider {
 	readonly snapshots: SnapshotStore;
 	#now: () => number;
 	#primed: Promise<void> | null = null;
+	#primeTimeoutMs: number;
 
 	constructor(o: RemoteProviderOptions) {
 		this.client = o.client;
 		this.cache = o.cache;
 		this.snapshots = o.snapshots;
 		this.#now = o.now ?? Date.now;
+		this.#primeTimeoutMs = o.primeTimeoutMs ?? 2500;
 	}
 
-	/** Load the persisted cache and seed the ETag map with the snapshots (once). */
+	/**
+	 * Load the persisted cache and seed the ETag map with the snapshots (once). Never blocks the
+	 * remote mode: a broken or blocked storage just means "no cache" (after `primeTimeoutMs`).
+	 */
 	prime(): Promise<void> {
-		this.#primed ??= (async () => {
+		this.#primed ??= withTimeout(this.#loadCache(), this.#primeTimeoutMs, undefined);
+		return this.#primed;
+	}
+
+	async #loadCache(): Promise<void> {
+		return (async () => {
 			await this.cache.load();
 			for (const kids of [false, true]) {
 				const path = this.#homePath(kids, 20);
@@ -130,7 +143,6 @@ export class RemoteProvider implements CatalogProvider {
 			const meta = await this.snapshots.get<Snapshot<CatalogMeta>>('meta');
 			if (meta?.etag) this.client.seedEtag('/v1/catalog/meta', meta.etag, meta.body);
 		})().catch(() => undefined);
-		return this.#primed;
 	}
 
 	#homePath(kids: boolean, limit: number) {
@@ -172,18 +184,24 @@ export class RemoteProvider implements CatalogProvider {
 			return { meta, fromCache: false };
 		} catch (err) {
 			if (!isOffline(err)) throw err;
-			const snap = await this.snapshots.get<Snapshot<CatalogMeta>>('meta');
+			const snap = await this.#snapshot<CatalogMeta>('meta');
 			if (!snap) throw err;
 			return { meta: snap.body, fromCache: true };
 		}
 	}
 
 	async cachedMeta(): Promise<CatalogMeta | undefined> {
-		return (await this.snapshots.get<Snapshot<CatalogMeta>>('meta'))?.body;
+		const snap = await this.#snapshot<CatalogMeta>('meta');
+		return snap?.body;
+	}
+
+	/** A snapshot, or undefined when the storage fails or is too slow. */
+	#snapshot<T>(key: string): Promise<Snapshot<T> | undefined> {
+		return withTimeout(this.snapshots.get<Snapshot<T>>(key), this.#primeTimeoutMs, undefined);
 	}
 
 	async cachedHome(kids: boolean): Promise<HomeData | undefined> {
-		const snap = await this.snapshots.get<Snapshot<HomeResponse>>(`home:${kids ? 1 : 0}`);
+		const snap = await this.#snapshot<HomeResponse>(`home:${kids ? 1 : 0}`);
 		return snap ? this.#homeData(snap.body) : undefined;
 	}
 
@@ -312,13 +330,15 @@ export class RemoteProvider implements CatalogProvider {
 
 	async title(
 		id: string,
-		opts: { similar?: boolean } = {},
+		opts: { similar?: boolean; fresh?: boolean } = {},
 		signal?: AbortSignal
 	): Promise<TitleDetail | null> {
 		await this.prime();
 		const cached = this.cache.get('d:' + id);
+		// The cached detail has no stream urls (see stripStreamUrls): fine for the detail page,
+		// never for playback.
 		const fresh =
-			cached && 'detail' in cached && this.#now() - cached.savedAt < DETAIL_FRESH_MS
+			!opts.fresh && cached && 'detail' in cached && this.#now() - cached.savedAt < DETAIL_FRESH_MS
 				? cached.detail
 				: undefined;
 		let detail: WireDetail | undefined = fresh;
@@ -326,7 +346,7 @@ export class RemoteProvider implements CatalogProvider {
 			try {
 				detail = await this.client.title(id, signal);
 				if (detail && typeof detail.id === 'string') {
-					this.cache.set('d:' + id, { detail, savedAt: this.#now() });
+					this.cache.set('d:' + id, { detail: stripStreamUrls(detail), savedAt: this.#now() });
 					this.cache.delete('c:' + id);
 					this.rememberCards((detail.similar ?? []).slice(0, 6));
 				}
@@ -336,7 +356,9 @@ export class RemoteProvider implements CatalogProvider {
 					this.cache.delete('c:' + id);
 					return null;
 				}
-				if (!isOffline(err) || !cached || !('detail' in cached)) throw err;
+				// Offline: the cached detail (without stream urls) still shows the page; playback
+				// needs a fresh one anyway.
+				if (!isOffline(err) || opts.fresh || !cached || !('detail' in cached)) throw err;
 				detail = cached.detail;
 			}
 		}
@@ -446,6 +468,26 @@ export class RemoteProvider implements CatalogProvider {
 	}
 }
 
+/**
+ * A copy of a detail without stream urls (variant.url / altUrls carry the provider
+ * credentials), so nothing secret ever reaches the LRU or IndexedDB.
+ */
+export function stripStreamUrls(d: WireDetail): WireDetail {
+	const strip = <V extends { url: string; altUrls?: string[] }>(v: V): V => {
+		const { altUrls: _alt, ...rest } = v;
+		void _alt;
+		return { ...rest, url: '' } as V;
+	};
+	return {
+		...d,
+		variants: (d.variants ?? []).map(strip),
+		seasons: d.seasons?.map((s) => ({
+			...s,
+			episodes: (s.episodes ?? []).map((e) => ({ ...e, variants: (e.variants ?? []).map(strip) }))
+		}))
+	};
+}
+
 /** Defensive normalisation of a detail from the wire (arrays always present). */
 export function normalizeDetail(d: WireDetail, withSimilar = true): TitleDetail {
 	return {
@@ -453,7 +495,7 @@ export function normalizeDetail(d: WireDetail, withSimilar = true): TitleDetail 
 		altTitles: d.altTitles ?? [],
 		genres: d.genres ?? [],
 		cast: d.cast ?? [],
-		variants: (d.variants ?? []).filter((v) => v && typeof v.id === 'string' && v.url),
+		variants: (d.variants ?? []).filter((v) => v && typeof v.id === 'string'),
 		seasons:
 			d.kind === 'series'
 				? (d.seasons ?? []).filter((s) => s && Array.isArray(s.episodes))

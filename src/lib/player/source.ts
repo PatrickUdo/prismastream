@@ -36,26 +36,31 @@ export function withExtension(url: string, ext: string): string {
 	return `${m[1]}.${ext}${m[3] ?? ''}`;
 }
 
-/** Backend play urls redirect to the provider: never rewrite their path. */
-const PLAY_PATH = /\/v1\/play\/[^/?#]+\//;
-
 /**
  * Ordered list of playback attempts for a url. The engine tries them until one works.
- * `altUrls` (e.g. the .ts twin of a live stream, as backend play urls) are tried last.
+ * `altUrls` (e.g. the .ts twin of a live stream) are tried after the url's own candidates.
  */
 export function streamCandidates(
 	url: string,
 	containerExt?: string,
 	altUrls: string[] = []
 ): StreamCandidate[] {
-	if (PLAY_PATH.test(url)) {
-		const ext = (containerExt || '').toLowerCase().replace(/^\./, '');
-		const kind: StreamKind = PROGRESSIVE_EXT.has(ext) ? 'progressive' : 'hls';
-		const out: StreamCandidate[] = [{ url, kind }];
-		for (const alt of altUrls) if (alt && alt !== url) out.push({ url: alt, kind: 'progressive' });
-		if (!PROGRESSIVE_EXT.has(ext) && !HLS_EXT.has(ext)) out.push({ url, kind: 'progressive' });
-		return out;
+	const own = ownCandidates(url, containerExt);
+	const seen = new Set(own.map((c) => `${c.kind}|${c.url}`));
+	for (const alt of altUrls) {
+		if (!alt || alt === url) continue;
+		for (const c of ownCandidates(alt)) {
+			const key = `${c.kind}|${c.url}`;
+			if (!seen.has(key)) {
+				seen.add(key);
+				own.push(c);
+			}
+		}
 	}
+	return own;
+}
+
+function ownCandidates(url: string, containerExt?: string): StreamCandidate[] {
 	const ext = (containerExt || urlExtension(url)).toLowerCase().replace(/^\./, '');
 	const urlExt = urlExtension(url);
 	if (HLS_EXT.has(ext)) return [{ url, kind: 'hls' }];

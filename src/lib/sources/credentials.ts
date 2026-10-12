@@ -18,7 +18,8 @@
 // Secrets never go to Preferences/localStorage, logs or error messages.
 import { Capacitor } from '@capacitor/core';
 import { SecureStorage, KeychainAccess } from '@aparajita/capacitor-secure-storage';
-import { createStore, get, set, del, type UseStore } from 'idb-keyval';
+import { get, set, del, type UseStore } from 'idb-keyval';
+import { safeStore } from '#lib/idb.ts';
 
 export { redactUrl, redactText } from '#lib/providers/redact.ts';
 
@@ -54,7 +55,7 @@ function webAvailable(): boolean {
 }
 
 function store(): UseStore {
-	vault ??= createStore('prismastream-vault', 'vault');
+	vault ??= safeStore('prismastream-vault', 'vault');
 	return vault;
 }
 

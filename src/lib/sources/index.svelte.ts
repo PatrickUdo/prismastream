@@ -36,6 +36,9 @@ import type { RawCatalog as DemoCatalog } from '#lib/types.ts';
 async function sampleCatalog(): Promise<DemoCatalog> {
 	if (!DEMO)
 		return { sourceId: 'sample', movies: [], series: [], channels: [], epg: [], fetchedAt: 0 };
+	// The literal env check lets the bundler drop the demo data from production builds.
+	if (import.meta.env.VITE_DEMO === 'false')
+		return { sourceId: 'sample', movies: [], series: [], channels: [], epg: [], fetchedAt: 0 };
 	return (await import('#lib/sample/index.ts')).sampleCatalog();
 }
 import { loadJSON, saveJSON, uid } from '#lib/storage.ts';

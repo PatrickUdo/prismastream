@@ -10,7 +10,7 @@
 	import { i18n, t } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
-	import { library } from '#lib/catalog/library.svelte.ts';
+	import { errorText, library } from '#lib/catalog/library.svelte.ts';
 	import { resource } from '#lib/catalog/resource.svelte.ts';
 	import Backdrop from '#lib/components/Backdrop.svelte';
 	import Poster from '#lib/components/Poster.svelte';
@@ -27,6 +27,7 @@
 	import Modal from '#lib/components/Modal.svelte';
 	import Skeleton from '#lib/components/Skeleton.svelte';
 	import EmptyState from '#lib/components/EmptyState.svelte';
+	import ErrorDetails from '#lib/components/ErrorDetails.svelte';
 	import { libraryHref, path, watchHref, type SubtitleParam } from '#lib/components/links.ts';
 	import {
 		bestQuality,
@@ -38,6 +39,7 @@
 	} from '#lib/components/format.ts';
 	import { displayTitle, secondaryTitles } from '#lib/components/titles.ts';
 	import { bestSubtitle } from '#lib/merge/pick.ts';
+	import { needsApp } from '#lib/player/play-url.ts';
 	import { playAction, profilePrefs } from '#lib/components/play.ts';
 	import {
 		allVariants,
@@ -116,6 +118,8 @@
 		options.sources.map((s) => ({ value: s, label: library.sourceName(s) }))
 	);
 	const versionCount = $derived(variants.length);
+	/** Web: versions the browser cannot play (http streams on an https page). */
+	const appOnlyVariants = $derived(variants.filter((v) => needsApp(v)).length);
 	const sourceCount = $derived(new Set(variants.map((v) => v.sourceId)).size);
 
 	// ---- Play ----------------------------------------------------------------
@@ -284,9 +288,10 @@
 			icon="alert"
 			tone="error"
 			title={t('common.error')}
-			body={t(library.offline ? 'cloud.error.offline' : 'cloud.error.unknown')}
+			body={t(errorText(detail.error))}
 		>
 			{#snippet actions()}
+				<ErrorDetails error={detail.error} />
 				<Button variant="primary" icon="refresh" onclick={() => detail.reload()}>
 					{t('common.retry')}
 				</Button>
@@ -411,6 +416,16 @@
 							</p>
 						</header>
 
+						{#if appOnlyVariants}
+							<p class="app-note" role="note">
+								<Icon name="monitor" size="1rem" />
+								<span>
+									{appOnlyVariants === variants.length
+										? t('player.app.detailAll')
+										: t('player.app.detailSome')}
+								</span>
+							</p>
+						{/if}
 						{#if variants.length === 0}
 							<p class="muted">
 								{seasonsLoading ? t('detail.loadingEpisodes') : t('detail.noVersions')}
@@ -660,6 +675,14 @@
 {/if}
 
 <style>
+	.app-note {
+		display: flex;
+		gap: 0.5rem;
+		align-items: flex-start;
+		color: var(--text-3);
+		font-size: var(--text-s);
+		line-height: 1.45;
+	}
 	/* ---- Hero ---------------------------------------------------------------- */
 	.hero {
 		position: relative;

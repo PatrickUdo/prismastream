@@ -20,6 +20,7 @@
 	import EmptyState from '#lib/components/EmptyState.svelte';
 	import Button from '#lib/components/Button.svelte';
 	import CloudBanner from '#lib/components/CloudBanner.svelte';
+	import ErrorDetails from '#lib/components/ErrorDetails.svelte';
 	import { libraryHref, path } from '#lib/components/links.ts';
 
 	const ROW_LIMIT = 24;
@@ -175,6 +176,7 @@
 			body={home.error ? t(errorText(home.error)) : (library.error ?? t('cloud.error.unknown'))}
 		>
 			{#snippet actions()}
+				<ErrorDetails error={home.error} text={home.error ? null : library.errorDetail} />
 				<Button
 					variant="primary"
 					icon="refresh"

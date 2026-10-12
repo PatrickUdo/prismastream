@@ -1,48 +1,68 @@
-// Play urls for the current platform. In remote mode every StreamVariant.url is a backend
-// play url (`…/v1/play/<playToken>/<variant>`) that answers with a 302 to the provider.
+// Stream urls and where they can play. Streaming always happens on the device, straight from
+// the IPTV provider: the backend is never in the video path (no play redirects, no proxy).
 //
-// - Native (Capacitor): use the play url as is; AVPlayer/ExoPlayer/hls.js follow the redirect.
-// - Web: IPTV upstreams are often plain http (mixed content) and never send CORS headers, so
-//   unless the variant is known to be https end to end, add `?via=proxy`: the backend then
-//   streams it over https (HLS playlists rewritten). Urls that are not play urls (demo streams,
-//   local sources) are left alone.
+// - Native (Capacitor iOS/Android/Android TV): play the url directly (with the native CORS
+//   fallback loader for HLS).
+// - Web: a plain-http stream on an https page is mixed content and cannot play; CORS or
+//   network errors from hls.js usually mean the same. Then the player and the detail page show
+//   "Deze stream speel je af in de PrismaStream-app" (see AppFallback.svelte).
+//
+// Stream urls may contain the provider credentials: never persist or log them.
 import { Capacitor } from '@capacitor/core';
 import type { StreamVariant } from '#lib/types.ts';
 
-const PLAY_PATH = /\/v1\/play\/[^/?#]+\//;
-
-export function isPlayUrl(url: string): boolean {
-	return PLAY_PATH.test(url);
+export interface PlayEnv {
+	native: boolean;
+	/** Protocol of the page ('https:' in production). */
+	pageProtocol: string;
 }
 
-function withVia(url: string): string {
-	if (/[?&]via=/.test(url)) return url;
-	const hash = url.indexOf('#');
-	const base = hash === -1 ? url : url.slice(0, hash);
-	const tail = hash === -1 ? '' : url.slice(hash);
-	return `${base}${base.includes('?') ? '&' : '?'}via=proxy${tail}`;
+export function currentPlayEnv(): PlayEnv {
+	return {
+		native: Capacitor.isNativePlatform(),
+		pageProtocol: typeof location !== 'undefined' ? location.protocol : 'https:'
+	};
 }
 
-export interface PlayUrlOptions {
-	/** Defaults to Capacitor.isNativePlatform(). */
-	native?: boolean;
-	/** The upstream is known to be https and CORS-friendly (optional hint from the server). */
-	upstreamSecure?: boolean;
+/** The url to hand to the player: always the stream url itself. */
+export function playUrlFor(url: string): string {
+	return url;
 }
 
-/** The url to hand to the player for a stream url on this platform. */
-export function playUrlFor(url: string, opts: PlayUrlOptions = {}): string {
-	const native = opts.native ?? Capacitor.isNativePlatform();
-	if (native || !isPlayUrl(url) || opts.upstreamSecure) return url;
-	return withVia(url);
+/** A plain-http url that a https page cannot load (mixed content). */
+export function isMixedContent(url: string, env: PlayEnv = currentPlayEnv()): boolean {
+	return !env.native && env.pageProtocol === 'https:' && /^http:\/\//i.test(url);
 }
 
-/** A variant with its url and altUrls adjusted for this platform (see playUrlFor). */
-export function playableVariant<V extends StreamVariant>(v: V, opts: PlayUrlOptions = {}): V {
-	const hint = (v as V & { upstreamSecure?: boolean; upstream?: string }).upstreamSecure;
-	const o = { ...opts, upstreamSecure: opts.upstreamSecure ?? hint === true };
-	const url = playUrlFor(v.url, o);
-	const altUrls = v.altUrls?.map((u) => playUrlFor(u, o));
-	if (url === v.url && (!v.altUrls || altUrls!.every((u, i) => u === v.altUrls![i]))) return v;
-	return { ...v, url, ...(altUrls ? { altUrls } : {}) };
+/** A variant as the backend sends it: `upstreamHttp` tells (also without the url) it is http. */
+export type PlayableVariant = Pick<StreamVariant, 'url'> & { upstreamHttp?: boolean };
+
+/** True when the browser cannot play this variant at all (web only, https page, http stream). */
+export function needsApp(v: PlayableVariant | undefined, env: PlayEnv = currentPlayEnv()): boolean {
+	if (!v || env.native || env.pageProtocol !== 'https:') return false;
+	return v.upstreamHttp === true || isMixedContent(v.url, env);
+}
+
+/** A player error that, on the web, most likely means "use the app" (CORS, network, format). */
+export function errorNeedsApp(
+	kind: 'network' | 'media' | 'unsupported' | 'unknown' | undefined,
+	env: PlayEnv = currentPlayEnv()
+): boolean {
+	return !env.native && (kind === 'network' || kind === 'unsupported');
+}
+
+export type MobileOs = 'ios' | 'android' | null;
+
+export function mobileOs(
+	ua: string = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+): MobileOs {
+	if (/iPhone|iPad|iPod/i.test(ua)) return 'ios';
+	if (/Android/i.test(ua)) return 'android';
+	return null;
+}
+
+/** "Open in VLC" link (VLC registers vlc:// on iOS and Android), or null elsewhere. */
+export function vlcUrl(url: string, os: MobileOs = mobileOs()): string | null {
+	if (!os || !/^https?:\/\//i.test(url)) return null;
+	return `vlc://${url}`;
 }

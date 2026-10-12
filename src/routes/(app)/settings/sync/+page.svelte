@@ -9,7 +9,7 @@
 	import { page } from '$app/state';
 	import { t, i18n } from '#lib/i18n/index.svelte.ts';
 	import { user } from '#lib/stores/user.svelte.ts';
-	import { syncEngine, SyncFailure, defaultDeviceName, initSync } from '#lib/sync/index.ts';
+	import { syncEngine, SyncFailure, initSync } from '#lib/sync/index.ts';
 	import type { DeviceInfo } from '#lib/sync/api.ts';
 	import { isInsecureUrl, normalizeServerUrl } from '#lib/sync/api.ts';
 	import { passwordStrength } from '#lib/sync/crypto.ts';
@@ -19,20 +19,17 @@
 	import Button from '#lib/components/Button.svelte';
 	import Icon from '#lib/components/Icon.svelte';
 	import PasswordField from '#lib/components/account/PasswordField.svelte';
-	import TvLogin from '#lib/components/account/TvLogin.svelte';
+	import AccountForm, { type AccountTab } from '#lib/components/account/AccountForm.svelte';
+	import { goto } from '$app/navigation';
+	import { REQUIRE_LOGIN, session } from '#lib/session.svelte.ts';
+	import { resetProfileChosen } from '../../profiles/session.ts';
 	import { path } from '#lib/components/links.ts';
 	import { kids } from '#lib/stores/kids.svelte.ts';
 	import KidsLock from '#lib/components/KidsLock.svelte';
 
-	type Tab = 'login' | 'register' | 'tv';
-
-	let tab = $state<Tab>(
+	let tab = $state<AccountTab>(
 		inputMode.tv ? 'tv' : page.url.searchParams.get('tab') === 'register' ? 'register' : 'login'
 	);
-	let email = $state('');
-	let password = $state('');
-	let password2 = $state('');
-	let signupCode = $state('');
 	let unlockPass = $state('');
 	let oldPass = $state('');
 	let newPass = $state('');
@@ -57,7 +54,6 @@
 
 	const configured = $derived(syncEngine.configured);
 	const serverUrl = $derived(library.backendUrl ?? '');
-	const strength = $derived(passwordStrength(password));
 	const newStrength = $derived(passwordStrength(newPass));
 	const passwordAccount = $derived(syncEngine.authMode === 'password');
 	/** The key does not fit any more (password changed elsewhere) or is missing. */
@@ -85,63 +81,17 @@
 	}
 
 	function reset() {
-		password = '';
-		password2 = '';
 		unlockPass = '';
 		oldPass = '';
 		newPass = '';
 		newPass2 = '';
 	}
 
-	function requireServer(): string | null {
-		if (!serverUrl) {
-			formError = t('account.noServer');
-			return null;
-		}
-		return serverUrl;
-	}
-
-	const validEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
-
-	async function submitLogin(e: SubmitEvent) {
-		e.preventDefault();
-		formError = notice = null;
-		const url = requireServer();
-		if (!url) return;
-		if (!validEmail(email)) return void (formError = t('sync.error.invalidEmail'));
-		if (!password) return void (formError = t('sync.error.invalidLogin'));
-		busy = true;
-		try {
-			await syncEngine.login(url, email, password, defaultDeviceName());
-			reset();
-			notice = t('account.done.login');
-		} catch (err) {
-			formError = errorText(err);
-		} finally {
-			busy = false;
-		}
-	}
-
-	async function submitRegister(e: SubmitEvent) {
-		e.preventDefault();
-		formError = notice = null;
-		const url = requireServer();
-		if (!url) return;
-		if (!validEmail(email)) return void (formError = t('sync.error.invalidEmail'));
-		if (!strength.acceptable) return void (formError = t('account.password.tooWeak'));
-		if (password !== password2) return void (formError = t('account.password.mismatch'));
-		if (!signupCode.trim()) return void (formError = t('account.signupCode.required'));
-		busy = true;
-		try {
-			await syncEngine.register(url, email, password, signupCode, defaultDeviceName());
-			reset();
-			signupCode = '';
-			notice = t('account.done.register');
-		} catch (err) {
-			formError = errorText(err);
-		} finally {
-			busy = false;
-		}
+	/** After logging in here: the profile choice (account profiles) unless there is only one. */
+	async function onLoggedIn() {
+		notice = t('account.done.login');
+		resetProfileChosen();
+		if (REQUIRE_LOGIN) await goto(path('/'));
 	}
 
 	async function submitUnlock(e: SubmitEvent) {
@@ -186,10 +136,12 @@
 		formError = null;
 		busy = true;
 		try {
-			await syncEngine.logout();
+			await session.logout();
 			confirmLogout = false;
 			devices = null;
 			notice = t('account.done.logout');
+			// Production: no app without an account; the gate shows the welcome screen.
+			if (REQUIRE_LOGIN) await goto(path('/welcome?reason=logout'), { replaceState: true });
 		} catch (err) {
 			formError = errorText(err);
 		} finally {
@@ -268,81 +220,7 @@
 
 		{#if !configured}
 			<section class="panel glass">
-				<div class="tabs" role="tablist" aria-label={t('account.title')}>
-					{#each [['login', t('account.tab.login')], ['register', t('account.tab.register')], ['tv', t('account.tab.tv')]] as [id, label] (id)}
-						<button
-							type="button"
-							role="tab"
-							aria-selected={tab === id}
-							class:active={tab === id}
-							onclick={() => ((tab = id as Tab), (formError = null))}
-							data-focusable
-						>
-							{label}
-						</button>
-					{/each}
-				</div>
-
-				{#if !serverUrl}
-					<p class="warn"><Icon name="alert" size="1rem" /> {t('account.noServer')}</p>
-				{:else if tab === 'tv'}
-					<TvLogin {serverUrl} ondone={() => (notice = t('account.done.login'))} />
-				{:else}
-					<form class="form" onsubmit={tab === 'login' ? submitLogin : submitRegister} novalidate>
-						<div class="field">
-							<label for="acc-email">{t('account.email')}</label>
-							<input
-								id="acc-email"
-								type="email"
-								inputmode="email"
-								autocomplete={tab === 'login' ? 'username' : 'email'}
-								autocapitalize="off"
-								spellcheck="false"
-								bind:value={email}
-								data-focusable
-							/>
-						</div>
-						<PasswordField
-							id="acc-pass"
-							label={t('account.password')}
-							bind:value={password}
-							autocomplete={tab === 'login' ? 'current-password' : 'new-password'}
-							meter={tab === 'register'}
-						/>
-						{#if tab === 'register'}
-							<PasswordField
-								id="acc-pass2"
-								label={t('account.passwordConfirm')}
-								bind:value={password2}
-								autocomplete="new-password"
-							/>
-							<div class="field">
-								<label for="acc-code">{t('account.signupCode')}</label>
-								<input
-									id="acc-code"
-									type="text"
-									autocomplete="off"
-									autocapitalize="off"
-									spellcheck="false"
-									bind:value={signupCode}
-									aria-describedby="acc-code-hint"
-									data-focusable
-								/>
-								<p id="acc-code-hint" class="hint">{t('account.signupCode.hint')}</p>
-							</div>
-							<p class="hint">{t('account.password.e2e')}</p>
-						{/if}
-						<div class="actions">
-							<Button variant="primary" type="submit" disabled={busy} icon="check" data-focusable>
-								{#if tab === 'login'}
-									{busy ? t('account.loggingIn') : t('account.loginAction')}
-								{:else}
-									{busy ? t('account.creating') : t('account.registerAction')}
-								{/if}
-							</Button>
-						</div>
-					</form>
-				{/if}
+				<AccountForm {serverUrl} bind:tab onsuccess={onLoggedIn} />
 			</section>
 		{:else}
 			<section class="panel glass">
@@ -644,30 +522,6 @@
 		color: var(--rating);
 		font-size: var(--text-s);
 	}
-	.tabs {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-		padding: 0.3rem;
-		border-radius: var(--radius-pill);
-		background: rgb(255 255 255 / 0.04);
-		border: 1px solid var(--line);
-		justify-self: start;
-		max-width: 100%;
-	}
-	.tabs button {
-		min-height: 2.5rem;
-		padding: 0 1rem;
-		border: 0;
-		border-radius: var(--radius-pill);
-		background: none;
-		color: var(--text-2);
-		font-weight: 650;
-	}
-	.tabs button.active {
-		background: var(--bg-elev-3);
-		color: var(--text);
-	}
 	.form {
 		display: grid;
 		gap: 1rem;
@@ -682,8 +536,6 @@
 		font-weight: 650;
 		font-size: var(--text-s);
 	}
-	input[type='email'],
-	input[type='text'],
 	input[type='url'] {
 		width: 100%;
 		min-width: 0;

@@ -16,6 +16,8 @@ interface ImportMetaEnv {
 	readonly VITE_BACKEND_URL?: string;
 	/** 'false' leaves the demo library out (production). Default: on. */
 	readonly VITE_DEMO?: string;
+	/** 'true': no app without a logged-in account (default: on when VITE_DEMO=false). */
+	readonly VITE_REQUIRE_LOGIN?: string;
 }
 
 export {};

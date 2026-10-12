@@ -69,7 +69,12 @@
 		if (!user.ready) return;
 		if (user.profiles.length <= 1) return markProfileChosen();
 		if (page.route.id?.startsWith('/(app)/profiles')) return;
-		if (!profileChosen()) void goto(path('/profiles'), { replaceState: true });
+		if (profileChosen()) return;
+		// Keep the requested page (deep link) to continue there after choosing a profile.
+		const next = page.url.pathname + page.url.search;
+		void goto(path(next === '/' ? '/profiles' : `/profiles?next=${encodeURIComponent(next)}`), {
+			replaceState: true
+		});
 	});
 </script>
 

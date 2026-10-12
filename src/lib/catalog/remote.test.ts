@@ -48,7 +48,7 @@ function memorySnapshots(): SnapshotStore & { data: Map<string, unknown> } {
 	};
 }
 
-function setup(handler: Handler, opts: { online?: () => boolean } = {}) {
+function setup(handler: Handler) {
 	const calls: { url: URL; init: RequestInit }[] = [];
 	const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
 		const url = new URL(String(input));
@@ -59,8 +59,7 @@ function setup(handler: Handler, opts: { online?: () => boolean } = {}) {
 		baseUrl: () => BASE,
 		getToken: () => 'pst_token',
 		fetch: fetchMock as unknown as typeof fetch,
-		sleep: async () => {},
-		isOnline: opts.online ?? (() => true)
+		sleep: async () => {}
 	});
 	const storage = memoryLruStorage<CacheEntry>();
 	const cache = new LruCache<CacheEntry>({ maxItems: 300, maxBytes: 5 * 1024 * 1024, storage });
@@ -122,10 +121,37 @@ describe('BackendClient', () => {
 		expect(n).toBe(1);
 	});
 
-	it('reports offline without fetching when the device is offline', async () => {
-		const { client, fetchMock } = setup(() => json({}), { online: () => false });
-		await expect(client.meta()).rejects.toBeInstanceOf(BackendOfflineError);
-		expect(fetchMock).not.toHaveBeenCalled();
+	it('never trusts navigator.onLine: with onLine=false the request still goes out', async () => {
+		const desc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+		Object.defineProperty(globalThis, 'navigator', {
+			value: { onLine: false },
+			configurable: true
+		});
+		try {
+			const { client, fetchMock } = setup(() => json({ builtAt: 1, status: 'ready' }));
+			await expect(client.meta()).resolves.toMatchObject({ status: 'ready' });
+			expect(fetchMock).toHaveBeenCalledOnce();
+		} finally {
+			if (desc) Object.defineProperty(globalThis, 'navigator', desc);
+			else delete (globalThis as { navigator?: unknown }).navigator;
+		}
+	});
+
+	it('reports offline only after a real network error of fetch', async () => {
+		const reach: boolean[] = [];
+		const client = new BackendClient({
+			baseUrl: () => BASE,
+			getToken: () => 't',
+			sleep: async () => {},
+			onReachability: (r) => reach.push(r),
+			fetch: (async () => {
+				throw new TypeError('Failed to fetch');
+			}) as unknown as typeof fetch
+		});
+		const err = await client.meta().catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(BackendOfflineError);
+		expect((err as BackendOfflineError).reason).toBe('unreachable');
+		expect(reach).toEqual([false]);
 	});
 
 	it('drops If-None-Match when the CORS preflight refuses it', async () => {
@@ -215,8 +241,13 @@ describe('RemoteProvider', () => {
 		const t = await provider.title('m1');
 		expect(t?.variants[0].url).toContain('/v1/play/');
 		expect(t?.similar.map((s) => s.id)).toEqual(['m2']);
-		await provider.title('m1');
-		expect(n).toBe(1); // fresh detail from the cache
+		const cachedView = await provider.title('m1');
+		expect(n).toBe(1); // recent detail from the cache...
+		expect(cachedView?.variants[0].url).toBe(''); // ...but without stream urls
+		expect(cachedView?.variants[0].id).toBe('s:1');
+		const forPlayer = await provider.title('m1', { fresh: true });
+		expect(n).toBe(2); // the player always asks the server
+		expect(forPlayer?.variants[0].url).toContain('/v1/play/');
 		expect(await provider.title('missing')).toBeNull();
 	});
 
@@ -305,6 +336,59 @@ describe('RemoteProvider', () => {
 		await expect(provider.home({ kids: false })).rejects.toBeInstanceOf(BackendError);
 	});
 
+	it('never persists stream urls (credentials) in the LRU storage', async () => {
+		const secret = 'http://iptv.example:8080/movie/user/pass/1.mkv';
+		const { provider, cache, storage } = setup(() =>
+			json({
+				...card('s1', { kind: 'series' }),
+				cast: [],
+				sourceIds: [],
+				rawRefs: [],
+				variants: [
+					{
+						id: 'a',
+						sourceId: 's',
+						url: secret,
+						altUrls: [secret],
+						audioLangs: [],
+						subtitleLangs: [],
+						quality: 'HD',
+						label: ''
+					}
+				],
+				seasons: [
+					{
+						number: 1,
+						episodes: [
+							{
+								id: 's1/s1e1',
+								season: 1,
+								episode: 1,
+								title: 'x',
+								variants: [
+									{
+										id: 'e',
+										sourceId: 's',
+										url: secret,
+										audioLangs: [],
+										subtitleLangs: [],
+										quality: 'HD',
+										label: ''
+									}
+								]
+							}
+						]
+					}
+				]
+			})
+		);
+		await provider.title('s1');
+		await cache.flush();
+		const stored = JSON.stringify([...storage.records.values()]);
+		expect(stored).not.toContain('iptv.example');
+		expect(stored).toContain('s1/s1e1');
+	});
+
 	it('toCard() strips variants and seasons', () => {
 		const c = toCard({
 			...card('s1', { kind: 'series' }),
@@ -319,3 +403,47 @@ describe('RemoteProvider', () => {
 		expect(c.seasonCount).toBe(1);
 	});
 });
+
+describe('RemoteProvider with a stuck cache storage', () => {
+	it('does not block remote mode: requests go out without the cache', async () => {
+		const hanging: LruStorageLike = {
+			load: () => new Promise(() => {}),
+			save: async () => {},
+			remove: async () => {},
+			clear: async () => {}
+		};
+		const calls: string[] = [];
+		const client = new BackendClient({
+			baseUrl: () => BASE,
+			getToken: () => 't',
+			sleep: async () => {},
+			fetch: (async (u: string) => {
+				calls.push(u);
+				return json({
+					featured: [],
+					recent: [],
+					popularMovies: [],
+					trendingSeries: [],
+					genres: [],
+					live: []
+				});
+			}) as unknown as typeof fetch
+		});
+		const stuckSnapshots: SnapshotStore = {
+			get: () => new Promise(() => {}),
+			set: async () => {},
+			clear: async () => {}
+		};
+		const provider = new RemoteProvider({
+			client,
+			cache: new LruCache<CacheEntry>({ maxItems: 10, maxBytes: 1e6, storage: hanging }),
+			snapshots: stuckSnapshots,
+			primeTimeoutMs: 20
+		});
+		const home = await provider.home({ kids: false });
+		expect(home.featured).toEqual([]);
+		expect(calls).toHaveLength(1);
+	});
+});
+
+type LruStorageLike = import('#lib/backend/lru.ts').LruStorage<CacheEntry>;

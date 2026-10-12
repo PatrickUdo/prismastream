@@ -93,10 +93,13 @@ export interface CatalogProvider {
 	titles(q: TitleQuery, signal?: AbortSignal): Promise<TitlePage>;
 	/** Cards for ids, in the order of `ids`; unknown ids are left out. */
 	cards(ids: string[], opts: { kids: boolean }, signal?: AbortSignal): Promise<TitleCard[]>;
-	/** Full title (variants, seasons) plus similar titles; null when it does not exist. */
+	/**
+	 * Full title (variants, seasons) plus similar titles; null when it does not exist.
+	 * `fresh`: always ask the source (the player needs current stream urls).
+	 */
 	title(
 		id: string,
-		opts?: { similar?: boolean },
+		opts?: { similar?: boolean; fresh?: boolean },
 		signal?: AbortSignal
 	): Promise<TitleDetail | null>;
 	search(

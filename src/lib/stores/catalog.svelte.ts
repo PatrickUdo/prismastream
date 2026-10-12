@@ -35,6 +35,7 @@ import {
 	isSampleSourceId
 } from '#lib/sample/meta.ts';
 import { DEMO } from '#lib/demo.ts';
+import { safeStore } from '#lib/idb.ts';
 import { user } from '#lib/stores/user.svelte.ts';
 import { i18n } from '#lib/i18n/index.svelte.ts';
 import type { TmdbIndex } from '#lib/tmdb/types.ts';
@@ -43,12 +44,11 @@ const EMPTY: Catalog = { titles: [], channels: [], epg: {}, builtAt: 0 };
 const CACHE_KEY = 'catalog:built:v1';
 
 type IdbModule = typeof import('idb-keyval');
-let idbPromise: Promise<{ mod: IdbModule; store: ReturnType<IdbModule['createStore']> }> | null =
-	null;
+let idbPromise: Promise<{ mod: IdbModule; store: import('idb-keyval').UseStore }> | null = null;
 function idb() {
 	idbPromise ??= import('idb-keyval').then((mod) => ({
 		mod,
-		store: mod.createStore('ps-catalog', 'kv')
+		store: safeStore('ps-catalog', 'kv')
 	}));
 	return idbPromise;
 }
@@ -81,6 +81,8 @@ async function withSampleExtras(raws: RawCatalog[]): Promise<RawCatalog[]> {
 	if (!primary) return raws;
 	const have = new Set(raws.map((r) => r.sourceId));
 	if (SAMPLE_EXTRA_SOURCES.every((s) => have.has(s.id))) return raws;
+	// The literal env check lets the bundler drop the demo data from production builds.
+	if (import.meta.env.VITE_DEMO === 'false') return raws;
 	const { sampleExtraCatalogs } = await import('#lib/sample/index.ts');
 	return [...raws, ...sampleExtraCatalogs(primary.fetchedAt).filter((c) => !have.has(c.sourceId))];
 }
